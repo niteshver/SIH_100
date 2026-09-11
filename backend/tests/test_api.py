@@ -9,7 +9,7 @@ def test_health():
     assert response.json()['mode'] == 'demo'
 
 def test_report_is_human_review_only():
-    report = client.get('/api/tenders/GEM%2F2026%2FB%2F4819201/report').json()
+    report = client.get('/api/tenders/demo-tender/report').json()
     assert report['human_review_required'] is True
     assert report['ai_can_decide'] is False
 
