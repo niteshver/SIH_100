@@ -4,11 +4,12 @@
   "description": "You are a senior full-stack architect, Python developer, React developer, AI engineer, DevOps engineer, and hackathon MVP specialist.",
   "main": "index.js",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
-  },
+  "dev": "vite",
+  "build": "vite build",
+  "start": "vite preview --host 0.0.0.0 --port ${PORT:-8080}",
+  "typecheck": "tsc --noEmit",
+  "test": "vitest run"
+},
   "repository": {
     "type": "git",
     "url": "git+https://github.com/niteshver/SIH_100.git"
