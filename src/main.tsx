@@ -8,7 +8,7 @@ type Screen = 'landing' | 'login' | 'register' | 'officer' | 'create-tender' | '
 type Tender = { tender_id: string; name: string; department?: string; budget: string; deadline?: string; experience: string; description: string; requirements?: string[]; status?: string; bids?: number }
 type Bid = { bid_id: string; bidder_name: string; tender_id: string; score?: number; risk?: string; status: string; documents: { name: string; status?: string }[]; submitted_at: string }
 
-const API = 'http://localhost:8000'
+const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 const demoUser = { name: 'Demo officer', email: 'officer@tenderhub.demo', role: 'OFFICER' as UserRole }
 
 function App() {
