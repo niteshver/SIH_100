@@ -5,7 +5,7 @@ from typing import List
 import hashlib, json, re, shutil, tempfile, zipfile
 
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
-UPLOADS = Path(__file__).resolve().parents[2] / 'uploads'
+UPLOADS = Path(__file__).resolve().parent / "uploads"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 DATA = UPLOADS / 'records.json'
 MAX_FILE = 10 * 1024 * 1024
