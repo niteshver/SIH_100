@@ -66,23 +66,11 @@ export interface AuditService {
   record(event: string, metadata?: Record<string, string>): Promise<void>
 }
 
-export const DEMO_TENDERS: Tender[] = [
-  { id: 'TND-2026-001', title: 'Construction of Community Health Centre', department: 'Department of Health & Family Welfare', deadline: '18 Mar 2026', budget: '₹2.4 Cr', status: 'OPEN', bids: 24, requirements: ['5+ years experience', 'GST registration', '₹1 Cr turnover'] },
-  { id: 'TND-2026-002', title: 'Smart Classroom Equipment & Installation', department: 'Department of School Education', deadline: '24 Mar 2026', budget: '₹86 L', status: 'OPEN', bids: 11, requirements: ['OEM authorization', 'Make in India declaration', '3+ years experience'] },
-  { id: 'TND-2025-119', title: 'District E-Governance Network Upgrade', department: 'Department of Information Technology', deadline: 'Closed 04 Mar 2026', budget: '₹5.8 Cr', status: 'IN_REVIEW', bids: 37, requirements: ['ISO certification', '₹3 Cr turnover', 'Technical proposal'] },
-]
-
-export const DEMO_BIDS: Bid[] = [
-  { id: 'BID-260318-0842', bidder: 'Aarav Infrastructure Pvt. Ltd.', tender: 'Community Health Centre', submitted: 'Today, 09:42', score: 94, risk: 'LOW', status: 'VERIFIED' },
-  { id: 'BID-260317-0718', bidder: 'Nexora Build Systems', tender: 'Community Health Centre', submitted: 'Yesterday, 17:18', score: 81, risk: 'MEDIUM', status: 'REQUIRES_REVIEW' },
-  { id: 'BID-260316-0431', bidder: 'Pragati Civil Works', tender: 'E-Governance Network Upgrade', submitted: '16 Mar, 12:06', score: 76, risk: 'MEDIUM', status: 'IN_REVIEW' },
-]
-
-export const DEMO_ACTIVITY: Activity[] = [
-  { id: '1', label: 'Bid evidence verified', detail: 'Aarav Infrastructure · BID-260318-0842', time: '12 min ago', tone: 'green' },
-  { id: '2', label: 'New tender published', detail: 'Smart Classroom Equipment & Installation', time: '48 min ago', tone: 'blue' },
-  { id: '3', label: 'Manual review required', detail: 'Nexora Build Systems · GST mismatch', time: '1 hr ago', tone: 'amber' },
-]
+// Live data is intentionally empty until an officer publishes a tender or a bidder submits an application.
+// Keeping this collection empty prevents demo records from being presented as real procurement activity.
+export const DEMO_TENDERS: Tender[] = []
+export const DEMO_BIDS: Bid[] = []
+export const DEMO_ACTIVITY: Activity[] = []
 
 export const demoServices = {
   tender: { list: async (): Promise<ServiceResult<Tender[]>> => ({ data: DEMO_TENDERS, source: 'demo', requiresReview: true }) },

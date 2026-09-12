@@ -24,7 +24,9 @@ def health():
 @app.get('/api/tenders')
 def tenders():
     records = load_records()
-    return records['tenders'] or [{'tender_id': 'TND-2026-001', 'name': 'Construction of Community Health Centre', 'status': 'OPEN', 'experience': '5 years', 'budget': '₹2.4 Crore'}]
+    # Do not fabricate procurement activity. An empty list is the truthful state
+    # until an officer creates and publishes a tender.
+    return records['tenders']
 
 @app.post('/api/tenders')
 async def create_tender(name: str = Form(...), email: str = Form(...), experience: str = Form(...), budget: str = Form(...), description: str = Form(...), documents: List[UploadFile] = File(default=[])):
