@@ -16,7 +16,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_origins,
     allow_credentials='*' not in configured_origins,
-    allow_methods=['GET', 'POST', 'OPTIONS'],
+    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allow_headers=['*'],
 )
 UPLOADS = Path(os.getenv('UPLOAD_DIR', str(Path(__file__).resolve().parent / 'uploads')))
