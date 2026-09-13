@@ -1,11 +1,20 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
-import hashlib, json, re, shutil, tempfile, zipfile
+import hashlib, json, os, re, shutil, tempfile, zipfile
 
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
-UPLOADS = Path(__file__).resolve().parent / "uploads"
+configured_origins = [origin.strip() for origin in os.getenv('FRONTEND_ORIGINS', '*').split(',') if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=configured_origins,
+    allow_credentials='*' not in configured_origins,
+    allow_methods=['GET', 'POST', 'OPTIONS'],
+    allow_headers=['*'],
+)
+UPLOADS = Path(os.getenv('UPLOAD_DIR', str(Path(__file__).resolve().parent / 'uploads')))
 UPLOADS.mkdir(parents=True, exist_ok=True)
 DATA = UPLOADS / 'records.json'
 MAX_FILE = 10 * 1024 * 1024
@@ -50,8 +59,8 @@ async def store_file(upload: UploadFile, folder: str):
 async def store_zip(upload: UploadFile, folder: str):
     data = await upload.read()
     if len(data) > 25 * 1024 * 1024: raise HTTPException(413, 'ZIP exceeds 25 MB limit')
-    if not zipfile.is_zipfile(tempfile.SpooledTemporaryFile()):
-        pass
+    if not zipfile.is_zipfile(__import__('io').BytesIO(data)):
+        raise HTTPException(400, 'Invalid ZIP archive')
     temp = Path(tempfile.mkdtemp(prefix='tenderhub-'))
     try:
         archive = temp / 'upload.zip'; archive.write_bytes(data)
