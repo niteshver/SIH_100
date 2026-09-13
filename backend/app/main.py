@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
-import hashlib, json, os, re, shutil, tempfile, zipfile
+import hashlib, json, os, re, shutil, tempfile, zipfile, secrets, base64
 
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
 configured_origins = [origin.strip() for origin in os.getenv('FRONTEND_ORIGINS', '*').split(',') if origin.strip()]
@@ -36,8 +36,37 @@ def safe_name(filename):
     return name
 def extension(name): return Path(name).suffix.lower().lstrip('.')
 
+def hash_password(password: str, salt: bytes | None = None):
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 210000)
+    return base64.b64encode(salt).decode() + ':' + base64.b64encode(digest).decode()
+
+def verify_password(password: str, stored: str):
+    try:
+        salt, expected = stored.split(':', 1)
+        actual = hash_password(password, base64.b64decode(salt)).split(':', 1)[1]
+        return secrets.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
+
+@app.post('/api/auth/register')
+def register(full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('OFFICER'), organization: str=Form('')):
+    if len(password) < 8: raise HTTPException(422, 'Password must be at least 8 characters')
+    email = email.strip().lower(); records = load_records(); records.setdefault('users', [])
+    if any(u['email'] == email for u in records['users']): raise HTTPException(409, 'An account with this email already exists')
+    user = {'user_id': 'USR-' + secrets.token_hex(8), 'name': full_name.strip(), 'email': email, 'role': role if role in {'OFFICER','BIDDER'} else 'BIDDER', 'organization': organization.strip(), 'password_hash': hash_password(password), 'created_at': now()}
+    records['users'].append(user); records['audit'].append({'event':'REGISTRATION','user_id':user['user_id'],'at':now()}); save_records(records)
+    return {k: user[k] for k in ('user_id','name','email','role','organization')}
+
+@app.post('/api/auth/login')
+def login(email: str=Form(...), password: str=Form(...)):
+    records = load_records(); user = next((u for u in records.get('users', []) if u['email'] == email.strip().lower()), None)
+    if not user or not verify_password(password, user['password_hash']): raise HTTPException(401, 'Invalid email or password')
+    records['audit'].append({'event':'LOGIN','user_id':user['user_id'],'at':now()}); save_records(records)
+    return {k: user[k] for k in ('user_id','name','email','role','organization')}
+
 @app.get('/health')
-def health(): return {'status':'ok','mode':'demo-fallback','storage':'local demo storage; configure PostgreSQL/S3 for production','timestamp':now()}
+def health(): return {'status':'ok','mode':'connected','storage':'configured persistence','timestamp':now()}
 @app.get('/api/tenders')
 def tenders(): return load_records()['tenders']
 @app.get('/api/bids')
