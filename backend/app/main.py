@@ -65,7 +65,17 @@ def current_user(request: Request):
     if not user: raise HTTPException(401, 'User not found')
     return user
 
-def public_user(user): return {k: user[k] for k in ('user_id','name','email','role','organization')}
+def public_user(user): return {k: user.get(k, '') for k in ('user_id','name','email','role','organization')}
+
+
+def officer_user(user=Depends(current_user)):
+    if user['role'] != 'OFFICER': raise HTTPException(403, 'Officer access required')
+    return user
+
+
+def bidder_user(user=Depends(current_user)):
+    if user['role'] != 'BIDDER': raise HTTPException(403, 'Bidder access required')
+    return user
 def require_role(role: str):
     def checker(user=Depends(current_user)):
         if user['role'] != role: raise HTTPException(403, 'Insufficient permissions')
@@ -113,11 +123,17 @@ def logout(response: Response):
 @app.get('/health')
 def health(): return {'status':'ok','mode':'connected','storage':'configured persistence','timestamp':now()}
 @app.get('/api/tenders')
-def tenders(): return load_records()['tenders']
+def tenders(user=Depends(current_user)):
+    return load_records()['tenders'] if user['role'] == 'OFFICER' else [t for t in load_records()['tenders'] if t.get('status') == 'OPEN']
+
 @app.get('/api/bids')
-def bids(): return load_records()['bids']
+def bids(user=Depends(current_user)):
+    records = load_records()
+    return records['bids'] if user['role'] == 'OFFICER' else [b for b in records['bids'] if b.get('email') == user['email']]
+
 @app.get('/api/audit')
-def get_audit(): return load_records()['audit']
+def get_audit(user=Depends(officer_user)):
+    return load_records()['audit']
 
 async def store_file(upload: UploadFile, folder: str):
     name = safe_name(upload.filename); ext = extension(name)
@@ -154,7 +170,7 @@ async def store_zip(upload: UploadFile, folder: str):
     finally: shutil.rmtree(temp, ignore_errors=True)
 
 @app.post('/api/tenders')
-async def create_tender(name: str=Form(...), email: str=Form('demo@tenderhub.local'), experience: str=Form(...), budget: str=Form(...), description: str=Form(...), department: str=Form('Procurement'), deadline: str=Form(...), turnover: str=Form(''), documents: List[UploadFile]=File(default=[])):
+async def create_tender(name: str=Form(...), email: str=Form(...), experience: str=Form(...), budget: str=Form(...), description: str=Form(...), department: str=Form('Procurement'), deadline: str=Form(...), turnover: str=Form(''), documents: List[UploadFile]=File(default=[]), user=Depends(officer_user)):
     if len(name.strip()) < 4: raise HTTPException(422, 'Tender title is required')
     saved=[]
     for upload in documents: saved.append(await store_file(upload,'tenders'))
@@ -162,7 +178,7 @@ async def create_tender(name: str=Form(...), email: str=Form('demo@tenderhub.loc
     records=load_records(); records['tenders'].append(tender); records['audit'].append({'event':'TENDER_PUBLISHED','tender_id':tender['tender_id'],'at':now(),'documents':len(saved)}); save_records(records); return tender
 
 @app.post('/api/bids')
-async def create_bid(tender_id: str=Form(...), name: str=Form(...), email: str=Form(...), city: str=Form(...), experience: int=Form(...), bid_amount: str=Form(''), pan: str=Form(''), gstin: str=Form(''), declaration: str=Form(...), documents: List[UploadFile]=File(default=[])):
+async def create_bid(tender_id: str=Form(...), name: str=Form(...), email: str=Form(...), city: str=Form(...), experience: int=Form(...), bid_amount: str=Form(''), pan: str=Form(''), gstin: str=Form(''), declaration: str=Form(...), documents: List[UploadFile]=File(default=[]), user=Depends(bidder_user)):
     records=load_records(); tender=next((t for t in records['tenders'] if t['tender_id']==tender_id),None)
     if not tender: raise HTTPException(404,'Tender not found')
     if tender.get('deadline') and datetime.fromisoformat(tender['deadline']).replace(tzinfo=timezone.utc) < datetime.now(timezone.utc): raise HTTPException(409,'Tender deadline has expired')
@@ -178,7 +194,7 @@ async def create_bid(tender_id: str=Form(...), name: str=Form(...), email: str=F
 @app.post('/api/documents/upload')
 async def upload(file: UploadFile=File(...)): return await store_file(file,'bids')
 @app.post('/api/tenders/{tender_id}/analyze-bidders')
-def analyze(tender_id: str):
+def analyze(tender_id: str, user=Depends(officer_user)):
     records=load_records(); scoped=[b for b in records['bids'] if b.get('tender_id')==tender_id]; results=[]
     for index,bid in enumerate(scoped):
         score=max(0, min(100, 70 + min(15, bid.get('experience_years',0)*2) + (10 if bid.get('pan') else 0) + (5 if bid.get('gstin') else 0)))
@@ -188,4 +204,4 @@ def analyze(tender_id: str):
     records['analysis'][tender_id]=results; records['audit'].append({'event':'COMPLIANCE_CALCULATED','tender_id':tender_id,'at':now(),'source':'Rule-Based Fallback','human_review_required':True}); save_records(records)
     return {'tender_id':tender_id,'status':'COMPLETED','provider':'Rule-Based Fallback','ollama':'API_UNAVAILABLE','sandbox':'API_UNAVAILABLE','human_review_required':True,'results':results}
 @app.get('/api/tenders/{tender_id}/report')
-def report(tender_id: str): return {'tender_id':tender_id,'human_review_required':True,'ai_can_decide':False,'analysis':load_records()['analysis'].get(tender_id,[])}
+def report(tender_id: str, user=Depends(officer_user)): return {'tender_id':tender_id,'human_review_required':True,'ai_can_decide':False,'analysis':load_records()['analysis'].get(tender_id,[])}
