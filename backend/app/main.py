@@ -91,7 +91,6 @@ def verify_password(password: str, stored: str):
         return False
 
 @app.post('/api/auth/register')
-@app.post('/auth/register')
 def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('OFFICER'), organization: str=Form('')):
     if len(password) < 8: raise HTTPException(422, 'Password must be at least 8 characters')
     email = email.strip().lower(); records = load_records(); records.setdefault('users', [])
@@ -102,7 +101,6 @@ def register(response: Response, full_name: str=Form(...), email: str=Form(...),
     return public_user(user)
 
 @app.post('/api/auth/login')
-@app.post('/auth/login')
 def login(response: Response, email: str=Form(...), password: str=Form(...)):
     records = load_records(); user = next((u for u in records.get('users', []) if u['email'] == email.strip().lower()), None)
     if not user or not verify_password(password, user['password_hash']): raise HTTPException(401, 'Invalid email or password')
@@ -111,11 +109,9 @@ def login(response: Response, email: str=Form(...), password: str=Form(...)):
     return public_user(user)
 
 @app.get('/api/auth/me')
-@app.get('/auth/me')
 def me(request: Request): return public_user(current_user(request))
 
 @app.post('/api/auth/logout')
-@app.post('/auth/logout')
 def logout(response: Response):
     response.delete_cookie('tenderhub_session')
     return {'status':'logged_out'}
