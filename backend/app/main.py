@@ -1,12 +1,17 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
-import hashlib, json, os, re, shutil, tempfile, zipfile, secrets, base64
+import hashlib, json, os, re, shutil, tempfile, zipfile, secrets, base64, hmac
+SESSION_SECRET = os.getenv('SESSION_SECRET')
+if not SESSION_SECRET:
+    raise RuntimeError('SESSION_SECRET must be configured')
 
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
-configured_origins = [origin.strip() for origin in os.getenv('FRONTEND_ORIGINS', '*').split(',') if origin.strip()]
+configured_origins = [origin.strip() for origin in os.getenv('FRONTEND_ORIGINS', 'http://localhost:5173').split(',') if origin.strip()]
+if '*' in configured_origins:
+    raise RuntimeError('FRONTEND_ORIGINS must list explicit origins when credentials are enabled')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_origins,
@@ -41,6 +46,32 @@ def hash_password(password: str, salt: bytes | None = None):
     digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 210000)
     return base64.b64encode(salt).decode() + ':' + base64.b64encode(digest).decode()
 
+def make_session(user_id: str) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps({'user_id': user_id, 'exp': int(datetime.now(timezone.utc).timestamp()) + 86400}).encode()).decode()
+    signature = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return payload + '.' + signature
+
+def current_user(request: Request):
+    token = request.cookies.get('tenderhub_session')
+    if not token or '.' not in token: raise HTTPException(401, 'Authentication required')
+    payload, signature = token.rsplit('.', 1)
+    expected = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected): raise HTTPException(401, 'Invalid session')
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+        if data['exp'] < int(datetime.now(timezone.utc).timestamp()): raise HTTPException(401, 'Session expired')
+    except (ValueError, KeyError, json.JSONDecodeError): raise HTTPException(401, 'Invalid session')
+    user = next((u for u in load_records().get('users', []) if u['user_id'] == data['user_id']), None)
+    if not user: raise HTTPException(401, 'User not found')
+    return user
+
+def public_user(user): return {k: user[k] for k in ('user_id','name','email','role','organization')}
+def require_role(role: str):
+    def checker(user=Depends(current_user)):
+        if user['role'] != role: raise HTTPException(403, 'Insufficient permissions')
+        return user
+    return checker
+
 def verify_password(password: str, stored: str):
     try:
         salt, expected = stored.split(':', 1)
@@ -50,20 +81,34 @@ def verify_password(password: str, stored: str):
         return False
 
 @app.post('/api/auth/register')
-def register(full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('OFFICER'), organization: str=Form('')):
+@app.post('/auth/register')
+def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('OFFICER'), organization: str=Form('')):
     if len(password) < 8: raise HTTPException(422, 'Password must be at least 8 characters')
     email = email.strip().lower(); records = load_records(); records.setdefault('users', [])
     if any(u['email'] == email for u in records['users']): raise HTTPException(409, 'An account with this email already exists')
     user = {'user_id': 'USR-' + secrets.token_hex(8), 'name': full_name.strip(), 'email': email, 'role': role if role in {'OFFICER','BIDDER'} else 'BIDDER', 'organization': organization.strip(), 'password_hash': hash_password(password), 'created_at': now()}
     records['users'].append(user); records['audit'].append({'event':'REGISTRATION','user_id':user['user_id'],'at':now()}); save_records(records)
-    return {k: user[k] for k in ('user_id','name','email','role','organization')}
+    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite='lax', max_age=86400)
+    return public_user(user)
 
 @app.post('/api/auth/login')
-def login(email: str=Form(...), password: str=Form(...)):
+@app.post('/auth/login')
+def login(response: Response, email: str=Form(...), password: str=Form(...)):
     records = load_records(); user = next((u for u in records.get('users', []) if u['email'] == email.strip().lower()), None)
     if not user or not verify_password(password, user['password_hash']): raise HTTPException(401, 'Invalid email or password')
     records['audit'].append({'event':'LOGIN','user_id':user['user_id'],'at':now()}); save_records(records)
-    return {k: user[k] for k in ('user_id','name','email','role','organization')}
+    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite='lax', max_age=86400)
+    return public_user(user)
+
+@app.get('/api/auth/me')
+@app.get('/auth/me')
+def me(request: Request): return public_user(current_user(request))
+
+@app.post('/api/auth/logout')
+@app.post('/auth/logout')
+def logout(response: Response):
+    response.delete_cookie('tenderhub_session')
+    return {'status':'logged_out'}
 
 @app.get('/health')
 def health(): return {'status':'ok','mode':'connected','storage':'configured persistence','timestamp':now()}
