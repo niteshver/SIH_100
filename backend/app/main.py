@@ -97,7 +97,7 @@ def register(response: Response, full_name: str=Form(...), email: str=Form(...),
     if any(u['email'] == email for u in records['users']): raise HTTPException(409, 'An account with this email already exists')
     user = {'user_id': 'USR-' + secrets.token_hex(8), 'name': full_name.strip(), 'email': email, 'role': role if role in {'OFFICER','BIDDER'} else 'BIDDER', 'organization': organization.strip(), 'password_hash': hash_password(password), 'created_at': now()}
     records['users'].append(user); records['audit'].append({'event':'REGISTRATION','user_id':user['user_id'],'at':now()}); save_records(records)
-    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite='lax', max_age=86400)
+    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite=os.getenv('COOKIE_SAMESITE', 'none'), max_age=86400)
     return public_user(user)
 
 @app.post('/api/auth/login')
@@ -105,7 +105,7 @@ def login(response: Response, email: str=Form(...), password: str=Form(...)):
     records = load_records(); user = next((u for u in records.get('users', []) if u['email'] == email.strip().lower()), None)
     if not user or not verify_password(password, user['password_hash']): raise HTTPException(401, 'Invalid email or password')
     records['audit'].append({'event':'LOGIN','user_id':user['user_id'],'at':now()}); save_records(records)
-    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite='lax', max_age=86400)
+    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite=os.getenv('COOKIE_SAMESITE', 'none'), max_age=86400)
     return public_user(user)
 
 @app.get('/api/auth/me')
