@@ -170,10 +170,12 @@ async def store_zip(upload: UploadFile, folder: str, document_type: str = 'OTHER
     finally: shutil.rmtree(temp, ignore_errors=True)
 
 @app.post('/api/tenders')
-async def create_tender(name: str=Form(...), email: str=Form(...), experience: str=Form(...), budget: str=Form(...), description: str=Form(...), department: str=Form('Procurement'), deadline: str=Form(...), turnover: str=Form(''), documents: List[UploadFile]=File(default=[]), user=Depends(officer_user)):
+async def create_tender(name: str=Form(...), email: str=Form(...), experience: str=Form(...), budget: str=Form(...), description: str=Form(...), department: str=Form('Procurement'), deadline: str=Form(...), turnover: str=Form(''), documents: List[UploadFile]=File(default=[]), document_type: List[str]=Form(default=[]), user=Depends(officer_user)):
     if len(name.strip()) < 4: raise HTTPException(422, 'Tender title is required')
     saved=[]
-    for upload in documents: saved.append(await store_file(upload,'tenders'))
+    for index, upload in enumerate(documents):
+        category = document_type[index] if index < len(document_type) else 'OTHER_SUPPORTING'
+        saved.append(await store_file(upload,'tenders', category))
     tender={'tender_id':f'TND-{datetime.now().strftime("%Y%m%d%H%M%S")}', 'name':name, 'email':email, 'experience':experience, 'turnover':turnover, 'budget':budget, 'description':description, 'department':department, 'deadline':deadline, 'documents':saved, 'requirements':['Minimum experience: '+experience, 'Required turnover: '+turnover if turnover else 'Turnover review required'], 'status':'OPEN', 'bids':0, 'created_at':now()}
     records=load_records(); records['tenders'].append(tender); records['audit'].append({'event':'TENDER_PUBLISHED','tender_id':tender['tender_id'],'at':now(),'documents':len(saved)}); save_records(records); return tender
 
