@@ -31,9 +31,9 @@ def now(): return datetime.now(timezone.utc).isoformat()
 def load_records():
     if DATA.exists():
         data = json.loads(DATA.read_text())
-        data.setdefault('bids', []); data.setdefault('tenders', []); data.setdefault('audit', []); data.setdefault('analysis', {})
+        data.setdefault('users', []); data.setdefault('bids', []); data.setdefault('tenders', []); data.setdefault('applications', []); data.setdefault('audit', []); data.setdefault('analysis', {}); data.setdefault('decisions', [])
         return data
-    return {'bids': [], 'tenders': [], 'audit': [], 'analysis': {}}
+    return {'users': [], 'bids': [], 'tenders': [], 'applications': [], 'audit': [], 'analysis': {}, 'decisions': []}
 def save_records(records): DATA.write_text(json.dumps(records, indent=2))
 def audit(event, **meta):
     records = load_records(); records['audit'].append({'event': event, 'at': now(), **meta}); save_records(records)
@@ -389,4 +389,33 @@ def analyze(tender_id: str, user=Depends(officer_user)):
     records['analysis'][tender_id]=results; records['audit'].append({'event':'COMPLIANCE_CALCULATED','tender_id':tender_id,'at':now(),'source':'Rule-Based Fallback','human_review_required':True}); save_records(records)
     return {'tender_id':tender_id,'status':'COMPLETED','provider':'Rule-Based Fallback','ollama':'API_UNAVAILABLE','sandbox':'API_UNAVAILABLE','human_review_required':True,'results':results}
 @app.get('/api/tenders/{tender_id}/report')
-def report(tender_id: str, user=Depends(officer_user)): return {'tender_id':tender_id,'human_review_required':True,'ai_can_decide':False,'analysis':load_records()['analysis'].get(tender_id,[])}
+def report(tender_id: str, user=Depends(officer_user)):
+    records = load_records(); owned_tender(records, tender_id, user)
+    return {'tender_id':tender_id,'human_review_required':True,'ai_can_decide':False,'analysis':records['analysis'].get(tender_id,[])}
+
+@app.get('/api/bids/{application_id}/analysis')
+def application_analysis(application_id: str, user=Depends(officer_user)):
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); owned_tender(records, item['tender_id'], user)
+    return item.get('ai_review') or {'status':'PENDING','message':'Analysis has not been requested.','human_review_required':True}
+
+@app.post('/api/bids/{application_id}/decision')
+def decide_application(application_id: str, decision: str=Form(...), remarks: str=Form(''), user=Depends(officer_user)):
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); tender=owned_tender(records, item['tender_id'], user)
+    decision=decision.strip().upper()
+    if decision not in {'SHORTLISTED','REJECTED','CLARIFICATION_REQUESTED'}: raise HTTPException(422,'Decision must be SHORTLISTED, REJECTED, or CLARIFICATION_REQUESTED')
+    if item.get('status') not in {'SUBMITTED','SHORTLISTED','CLARIFICATION_REQUESTED'}: raise HTTPException(409,'Only submitted applications can receive a decision')
+    item['status']=decision; item['officer_remarks']=remarks.strip(); item['decision_at']=now(); item['decision_by']=user['user_id']
+    event={'event':'BID_DECISION','application_id':application_id,'tender_id':tender['tender_id'],'user_id':user['user_id'],'decision':decision,'at':item['decision_at']}
+    records.setdefault('decisions',[]).append(event); records['audit'].append(event); save_records(records)
+    return {'application_id':application_id,'tender_id':tender['tender_id'],'status':decision,'remarks':item['officer_remarks'],'notification_status':'NOT_SENT'}
+
+@app.delete('/api/applications/{application_id}/documents/{document_id}')
+def remove_application_document(application_id: str, document_id: str, user=Depends(bidder_user)):
+    records=load_records(); item=application_for(records, application_id, user)
+    if item.get('status')=='SUBMITTED': raise HTTPException(409,'Submitted applications cannot be edited')
+    doc=next((d for d in item.get('documents',[]) if d.get('document_id')==document_id),None)
+    if not doc: raise HTTPException(404,'Document not found')
+    path=UPLOADS / f'applications/{application_id}' / doc.get('stored_name','')
+    if path.exists(): path.unlink()
+    item['documents']=[d for d in item['documents'] if d.get('document_id')!=document_id]; item['updated_at']=now(); save_records(records)
+    return {'document_id':document_id,'removed':True}
