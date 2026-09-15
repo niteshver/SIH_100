@@ -49,7 +49,35 @@ function App() {
       setNotice('We could not connect to the TenderHub server. Please try again.')
     }
   }
-  async function createTender(form: FormData) { setLoading(true); try { const tender = await apiRequest('/api/tenders', { method: 'POST', body: form }); setTenders((items) => [...items, tender]); setSelectedTender(tender); setNotice('Tender published successfully.'); setScreen('tenders') } catch (error) { setNotice(error instanceof Error ? error.message : 'Tender could not be saved. Please try again.') } finally { setLoading(false) } }
+  async function createTender(form: FormData) {
+  const email = user?.email || demoUser.email
+
+  if (!form.get('email')) {
+    form.append('email', email)
+  }
+
+  setLoading(true)
+
+  try {
+    const tender = await apiRequest('/api/tenders', {
+      method: 'POST',
+      body: form,
+    })
+
+    setTenders((items) => [...items, tender])
+    setSelectedTender(tender)
+    setNotice('Tender published successfully.')
+    setScreen('tenders')
+  } catch (error) {
+    setNotice(
+      error instanceof Error
+        ? error.message
+        : 'Tender could not be saved. Please try again.'
+    )
+  } finally {
+    setLoading(false)
+  }
+}
   async function submitBid(form: FormData) { if (!selectedTender) return; form.append('tender_id', selectedTender.tender_id); setLoading(true); try { const bid = await apiRequest('/api/bids', { method: 'POST', body: form }); setBids((items) => [...items, bid]); setNotice(`Bid ${bid.bid_id} submitted and locked. Automatic analysis started.`); setScreen('review') } catch (error) { setNotice(error instanceof Error ? error.message : 'Bid could not be submitted. Please try again.') } finally { setLoading(false) } }
   function enter(next: Screen, authenticatedUser?: { name: string; email: string; role: UserRole; organization?: string }) { if (authenticatedUser) { setRole(authenticatedUser.role); setUser(authenticatedUser); next = authenticatedUser.role === 'OFFICER' ? 'officer' : 'bidder' }; setScreen(next); void refresh() }
 
