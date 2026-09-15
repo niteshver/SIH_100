@@ -330,6 +330,54 @@ def submit_application(application_id: str, user=Depends(bidder_user)):
     if not required_docs.issubset({d.get('document_type') for d in item.get('documents',[]) if d.get('upload_status')=='UPLOADED'}): raise HTTPException(422,'Required documents are incomplete')
     item['status']='SUBMITTED'; item['submitted_at']=now(); records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now()}); save_records(records); return {'application_id':application_id,'status':'SUBMITTED'}
 
+def owned_tender(records, tender_id, user):
+    tender = next((t for t in records.get('tenders', []) if t.get('tender_id') == tender_id), None)
+    if not tender: raise HTTPException(404, 'Tender not found')
+    if tender.get('email') != user.get('email'): raise HTTPException(403, 'Tender review access denied')
+    return tender
+
+def application_public(item):
+    return {k: v for k, v in item.items() if k not in ('bidder_id',)}
+
+@app.get('/api/officer/bids')
+def officer_bids(user=Depends(officer_user)):
+    records = load_records(); result=[]
+    for item in records.get('applications', []):
+        tender = next((t for t in records.get('tenders', []) if t.get('tender_id') == item.get('tender_id')), None)
+        if tender and tender.get('email') == user.get('email'):
+            result.append({**application_public(item), 'tender_title': tender.get('name'), 'department': tender.get('department'), 'deadline': tender.get('deadline'), 'document_verification_status': 'PENDING' if item.get('documents') else 'DOCUMENTS_PENDING', 'ai_review_status': item.get('ai_review_status', 'NOT_STARTED')})
+    return result
+
+@app.get('/api/bids/{application_id}')
+def officer_bid(application_id: str, user=Depends(officer_user)):
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); owned_tender(records, item.get('tender_id'), user)
+    tender=next(t for t in records['tenders'] if t.get('tender_id') == item.get('tender_id'))
+    return {'application': application_public(item), 'tender': {k:v for k,v in tender.items() if k != 'documents'}}
+
+@app.get('/api/bids/{application_id}/documents')
+def officer_bid_documents(application_id: str, user=Depends(officer_user)):
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); owned_tender(records, item.get('tender_id'), user)
+    return [{k:v for k,v in d.items() if k not in ('stored_name','sha256')} for d in item.get('documents', [])]
+
+@app.post('/api/bids/{application_id}/ai-review')
+def ai_review(application_id: str, user=Depends(officer_user)):
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); owned_tender(records, item.get('tender_id'), user)
+    docs=item.get('documents', []); required_docs={'PAN_CARD':'PAN Card','GST_CERTIFICATE':'GST Certificate','COMPANY_REGISTRATION':'Company Registration Certificate','ADDRESS_PROOF':'Address Proof','WORK_EXPERIENCE':'Experience Certificate','FINANCIAL_STATEMENT':'Turnover/Financial Certificate'}; missing=[name for code,name in required_docs.items() if not any(d.get('document_type') == code for d in docs)]
+    item['ai_review_status']='AI_REVIEW_COMPLETED'; item['ai_review']={'status':'AI_REVIEW_COMPLETED','missing_documents':missing,'warnings':['AI assistance only. Final verification requires authorized human review.'] if not missing else ['Required evidence is missing. Manual review required.'],'completed_at':now()}; records['audit'].append({'event':'AI_REVIEW_COMPLETED','application_id':application_id,'user_id':user['user_id'],'at':now()}); save_records(records); return item['ai_review']
+
+@app.post('/api/tenders/{tender_id}/award')
+def award_tender(tender_id: str, application_id: str = Form(...), user=Depends(officer_user)):
+    records=load_records(); tender=owned_tender(records, tender_id, user)
+    if tender.get('status') == 'AWARDED': raise HTTPException(409, 'Tender has already been awarded')
+    item=application_for(records, application_id, user, allow_officer=True)
+    if item.get('tender_id') != tender_id: raise HTTPException(422, 'Application does not belong to this tender')
+    if item.get('status') != 'SUBMITTED': raise HTTPException(409, 'Only submitted applications can be awarded')
+    tender['status']='AWARDED'; item['status']='AWARDED'; item['awarded_at']=now(); item['notification_status']='PENDING'
+    for other in records.get('applications', []):
+        if other.get('tender_id') == tender_id and other.get('application_id') != application_id and other.get('status') == 'SUBMITTED': other['status']='NOT_SELECTED'
+    records['audit'].append({'event':'TENDER_AWARDED','tender_id':tender_id,'application_id':application_id,'user_id':user['user_id'],'at':now()}); save_records(records)
+    return {'status':'AWARDED','tender_id':tender_id,'application_id':application_id,'notification_status':'PENDING','awarded_at':item['awarded_at']}
+
 @app.post('/api/tenders/{tender_id}/analyze-bidders')
 def analyze(tender_id: str, user=Depends(officer_user)):
     records=load_records(); scoped=[b for b in records['bids'] if b.get('tender_id')==tender_id]; results=[]
