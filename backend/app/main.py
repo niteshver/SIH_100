@@ -272,6 +272,64 @@ def verify_document(document_id: str, user=Depends(current_user)):
 def rag_query(query: str=Form(...), user=Depends(current_user)):
     if not query.strip(): raise HTTPException(422, 'Query is required')
     raise HTTPException(503, 'RAG processing is unavailable until an embedding and vector provider is configured')
+def application_for(records, application_id, user, allow_officer=False):
+    app_record = next((a for a in records.get('applications', []) if a.get('application_id') == application_id), None)
+    if not app_record: raise HTTPException(404, 'Application not found')
+    if app_record.get('bidder_id') != user.get('user_id') and not (allow_officer and user.get('role') == 'OFFICER'):
+        raise HTTPException(403, 'Application access denied')
+    return app_record
+
+@app.get('/api/applications')
+def list_applications(user=Depends(bidder_user)):
+    return [a for a in load_records().get('applications', []) if a.get('bidder_id') == user['user_id']]
+
+@app.post('/api/applications')
+def create_application(payload: dict, user=Depends(bidder_user)):
+    records = load_records(); records.setdefault('applications', [])
+    tender_id = payload.get('tender_id'); tender = next((t for t in records['tenders'] if t.get('tender_id') == tender_id and t.get('status') == 'OPEN'), None)
+    if not tender: raise HTTPException(404, 'Open tender not found')
+    existing = next((a for a in records['applications'] if a.get('tender_id') == tender_id and a.get('bidder_id') == user['user_id'] and a.get('status') != 'SUBMITTED'), None)
+    if existing:
+        existing.update({k: payload[k] for k in ('company','eligibility','documents','bid_amount') if k in payload}); save_records(records); return existing
+    app_record = {'application_id':'APP-' + secrets.token_hex(8), 'tender_id':tender_id, 'bidder_id':user['user_id'], 'bidder_name':user['name'], 'email':user['email'], 'company':payload.get('company',{}), 'eligibility':payload.get('eligibility',{}), 'documents':[], 'bid_amount':payload.get('bid_amount',''), 'status':'DRAFT', 'created_at':now(), 'updated_at':now()}
+    records['applications'].append(app_record); records['audit'].append({'event':'APPLICATION_DRAFT_CREATED','application_id':app_record['application_id'],'user_id':user['user_id'],'at':now()}); save_records(records); return app_record
+
+@app.put('/api/applications/{application_id}')
+def update_application(application_id: str, payload: dict, user=Depends(bidder_user)):
+    records=load_records(); item=application_for(records, application_id, user)
+    if item.get('status') == 'SUBMITTED': raise HTTPException(409, 'Submitted applications cannot be edited')
+    for key in ('company','eligibility','bid_amount'):
+        if key in payload: item[key]=payload[key]
+    item['updated_at']=now(); save_records(records); return item
+
+@app.post('/api/applications/{application_id}/documents')
+async def application_document(application_id: str, file: UploadFile=File(...), document_type: str=Form(...), user=Depends(bidder_user)):
+    records=load_records(); item=application_for(records, application_id, user)
+    if item.get('status') == 'SUBMITTED': raise HTTPException(409, 'Submitted applications cannot be edited')
+    result=await store_file(file, f'applications/{application_id}', document_type)
+    result['bidder_id']=user['user_id']; result['application_id']=application_id; result['tender_id']=item['tender_id']; result['verification_status']='NOT_STARTED'; result['rag_status']='PROCESSING'
+    item['documents']=[d for d in item.get('documents',[]) if d.get('document_type') != document_type] + [result]; item['updated_at']=now(); save_records(records); return {k:v for k,v in result.items() if k not in ('stored_name','sha256')}
+
+@app.get('/api/applications/{application_id}/documents/{document_id}')
+def protected_document(application_id: str, document_id: str, user=Depends(current_user)):
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); doc=next((d for d in item.get('documents',[]) if d.get('document_id')==document_id),None)
+    if not doc: raise HTTPException(404,'Document not found')
+    path=UPLOADS / f'applications/{application_id}' / doc.get('stored_name','')
+    if not path.exists(): raise HTTPException(404,'Stored document not found')
+    from fastapi.responses import FileResponse
+    return FileResponse(path, filename=doc.get('original_filename',doc.get('name','document')))
+
+@app.post('/api/applications/{application_id}/submit')
+def submit_application(application_id: str, user=Depends(bidder_user)):
+    records=load_records(); item=application_for(records, application_id, user)
+    if item.get('status') == 'SUBMITTED': raise HTTPException(409,'Application already submitted')
+    company=item.get('company',{}); required=['name','authorized_person','email','mobile','city','experience_years','annual_turnover','pan','gstin']
+    if any(not str(company.get(k,'')).strip() for k in required) or not item.get('bid_amount'): raise HTTPException(422,'Required company and bid fields are incomplete')
+    if not all(item.get('eligibility',{}).get(k) for k in ('experience_confirmation','turnover_confirmation','compliance_declaration')): raise HTTPException(422,'Eligibility confirmations are incomplete')
+    required_docs={'PAN_CARD','GST_CERTIFICATE','COMPANY_REGISTRATION','ADDRESS_PROOF','WORK_EXPERIENCE','FINANCIAL_STATEMENT'}
+    if not required_docs.issubset({d.get('document_type') for d in item.get('documents',[]) if d.get('upload_status')=='UPLOADED'}): raise HTTPException(422,'Required documents are incomplete')
+    item['status']='SUBMITTED'; item['submitted_at']=now(); records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now()}); save_records(records); return {'application_id':application_id,'status':'SUBMITTED'}
+
 @app.post('/api/tenders/{tender_id}/analyze-bidders')
 def analyze(tender_id: str, user=Depends(officer_user)):
     records=load_records(); scoped=[b for b in records['bids'] if b.get('tender_id')==tender_id]; results=[]
