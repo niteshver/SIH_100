@@ -23,7 +23,9 @@ UPLOADS = Path(os.getenv('UPLOAD_DIR', str(Path(__file__).resolve().parent / 'up
 UPLOADS.mkdir(parents=True, exist_ok=True)
 DATA = UPLOADS / 'records.json'
 MAX_FILE = 10 * 1024 * 1024
-ALLOWED = {'pdf', 'png', 'jpg', 'jpeg'}
+ALLOWED = {'pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg'}
+DOCUMENT_TYPES = {'TENDER_NOTICE', 'COMPANY_REGISTRATION', 'GST_CERTIFICATE', 'PAN_CARD', 'BANK_DETAILS', 'WORK_EXPERIENCE', 'FINANCIAL_STATEMENT', 'TECHNICAL_DOCUMENT', 'OTHER_SUPPORTING'}
+MAX_ZIP = 25 * 1024 * 1024
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def load_records():
@@ -131,18 +133,20 @@ def bids(user=Depends(current_user)):
 def get_audit(user=Depends(officer_user)):
     return load_records()['audit']
 
-async def store_file(upload: UploadFile, folder: str):
+async def store_file(upload: UploadFile, folder: str, document_type: str = 'OTHER_SUPPORTING'):
     name = safe_name(upload.filename); ext = extension(name)
-    if ext == 'zip': return await store_zip(upload, folder)
-    if ext not in ALLOWED: raise HTTPException(415, 'Accepted formats: PDF, PNG, JPG, JPEG and ZIP')
+    document_type = document_type.upper()
+    if document_type not in DOCUMENT_TYPES: raise HTTPException(422, 'Invalid document type')
+    if ext == 'zip': return await store_zip(upload, folder, document_type)
+    if ext not in ALLOWED: raise HTTPException(415, 'Accepted formats: PDF, DOC, DOCX, XLS, XLSX, JPG, JPEG, PNG and ZIP')
     data = await upload.read()
     if len(data) > MAX_FILE: raise HTTPException(413, 'File exceeds 10 MB limit')
     destination = UPLOADS / folder; destination.mkdir(exist_ok=True)
     unique = f'{hashlib.sha256(data).hexdigest()[:12]}-{name}'
     path = destination / unique; path.write_bytes(data)
-    return {'name':name,'stored_name':unique,'size':len(data),'sha256':hashlib.sha256(data).hexdigest(),'status':'UPLOADED','classification':'REQUIRES_MANUAL_REVIEW','extraction':'PENDING'}
+    return {'document_id':'DOC-' + secrets.token_hex(8),'name':name,'original_filename':name,'stored_name':unique,'size':len(data),'sha256':hashlib.sha256(data).hexdigest(),'document_type':document_type,'upload_status':'UPLOADED','verification_status':'PENDING','verification_message':'Verification has not started','rag_status':'NOT_STARTED','created_at':now(),'updated_at':now()}
 
-async def store_zip(upload: UploadFile, folder: str):
+async def store_zip(upload: UploadFile, folder: str, document_type: str = 'OTHER_SUPPORTING'):
     data = await upload.read()
     if len(data) > 25 * 1024 * 1024: raise HTTPException(413, 'ZIP exceeds 25 MB limit')
     if not zipfile.is_zipfile(__import__('io').BytesIO(data)):
@@ -160,7 +164,7 @@ async def store_zip(upload: UploadFile, folder: str):
                 name=safe_name(member.filename); ext=extension(name)
                 if ext not in ALLOWED: raise HTTPException(415, f'Unsupported ZIP file: {name}')
                 content=z.read(member); digest=hashlib.sha256(content).hexdigest(); stored=f'{digest[:12]}-{name}'
-                (destination/stored).write_bytes(content); output.append({'name':name,'stored_name':stored,'size':len(content),'sha256':digest,'status':'UPLOADED','classification':'REQUIRES_MANUAL_REVIEW','extraction':'PENDING'})
+                (destination/stored).write_bytes(content); output.append({'document_id':'DOC-' + secrets.token_hex(8),'name':name,'original_filename':name,'stored_name':stored,'size':len(content),'sha256':digest,'document_type':document_type,'upload_status':'UPLOADED','verification_status':'PENDING','verification_message':'Verification has not started','rag_status':'NOT_STARTED','created_at':now(),'updated_at':now()})
             return {'name':upload.filename or 'documents.zip','status':'EXTRACTED','files':output,'count':len(output)}
     except zipfile.BadZipFile: raise HTTPException(400, 'Invalid ZIP archive')
     finally: shutil.rmtree(temp, ignore_errors=True)
@@ -188,7 +192,31 @@ async def create_bid(tender_id: str=Form(...), name: str=Form(...), email: str=F
     records['audit'].append({'event':'BID_SUBMITTED','bid_id':bid['bid_id'],'tender_id':tender_id,'at':now(),'human_review_required':True}); save_records(records); return bid
 
 @app.post('/api/documents/upload')
-async def upload(file: UploadFile=File(...)): return await store_file(file,'bids')
+async def upload(file: UploadFile=File(...), document_type: str=Form('OTHER_SUPPORTING'), user=Depends(current_user)):
+    folder = 'tenders' if user['role'] == 'OFFICER' else 'bids'
+    result = await store_file(file, folder, document_type)
+    records = load_records(); records['audit'].append({'event':'DOCUMENT_UPLOADED','document_id':result.get('document_id'),'document_type':document_type.upper(),'user_id':user['user_id'],'at':now()}); save_records(records)
+    return result
+
+@app.get('/api/documents/{document_id}/status')
+def document_status(document_id: str, user=Depends(current_user)):
+    for collection in ('tenders', 'bids'):
+        for record in load_records().get(collection, []):
+            for document in record.get('documents', []):
+                if document.get('document_id') == document_id:
+                    return document
+    raise HTTPException(404, 'Document not found')
+
+@app.post('/api/documents/{document_id}/verify')
+def verify_document(document_id: str, user=Depends(current_user)):
+    if not os.getenv('SANDBOX_API_KEY'):
+        return {'document_id':document_id,'verification_status':'REQUIRES_MANUAL_REVIEW','verification_message':'Sandbox credentials are not configured; no verification was claimed.','provider':'SANDBOX','real_result':False}
+    return {'document_id':document_id,'verification_status':'PENDING','verification_message':'Verification provider is configured; processing is pending.','provider':'SANDBOX','real_result':True}
+
+@app.post('/api/rag/query')
+def rag_query(query: str=Form(...), user=Depends(current_user)):
+    if not query.strip(): raise HTTPException(422, 'Query is required')
+    raise HTTPException(503, 'RAG processing is unavailable until an embedding and vector provider is configured')
 @app.post('/api/tenders/{tender_id}/analyze-bidders')
 def analyze(tender_id: str, user=Depends(officer_user)):
     records=load_records(); scoped=[b for b in records['bids'] if b.get('tender_id')==tender_id]; results=[]
