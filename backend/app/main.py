@@ -166,13 +166,68 @@ async def store_zip(upload: UploadFile, folder: str):
     finally: shutil.rmtree(temp, ignore_errors=True)
 
 @app.post('/api/tenders')
-async def create_tender(name: str=Form(...), email: str=Form(...), experience: str=Form(...), budget: str=Form(...), description: str=Form(...), department: str=Form('Procurement'), deadline: str=Form(...), turnover: str=Form(''), documents: List[UploadFile]=File(default=[]), user=Depends(officer_user)):
-    if len(name.strip()) < 4: raise HTTPException(422, 'Tender title is required')
-    saved=[]
-    for upload in documents: saved.append(await store_file(upload,'tenders'))
-    tender={'tender_id':f'TND-{datetime.now().strftime("%Y%m%d%H%M%S")}', 'name':name, 'email':email, 'experience':experience, 'turnover':turnover, 'budget':budget, 'description':description, 'department':department, 'deadline':deadline, 'documents':saved, 'requirements':['Minimum experience: '+experience, 'Required turnover: '+turnover if turnover else 'Turnover review required'], 'status':'OPEN', 'bids':0, 'created_at':now()}
-    records=load_records(); records['tenders'].append(tender); records['audit'].append({'event':'TENDER_PUBLISHED','tender_id':tender['tender_id'],'at':now(),'documents':len(saved)}); save_records(records); return tender
+async def create_tender(
+    name: str = Form(...),
+    experience: str = Form(...),
+    budget: str = Form(...),
+    description: str = Form(...),
+    department: str = Form('Procurement'),
+    deadline: str = Form(...),
+    turnover: str = Form(''),
+    documents: List[UploadFile] = File(default=[]),
+    user=Depends(officer_user),
+):
+    name = name.strip()
+    experience = experience.strip()
+    budget = budget.strip()
+    description = description.strip()
+    department = department.strip()
+    deadline = deadline.strip()
+    turnover = turnover.strip()
 
+    if len(name) < 4:
+        raise HTTPException(422, 'Tender title is required')
+
+    saved = []
+
+    for upload in documents:
+        if upload and upload.filename:
+            saved.append(await store_file(upload, 'tenders'))
+
+    tender = {
+        'tender_id': f'TND-{datetime.now().strftime("%Y%m%d%H%M%S")}',
+        'name': name,
+        'email': user['email'],
+        'experience': experience,
+        'turnover': turnover,
+        'budget': budget,
+        'description': description,
+        'department': department,
+        'deadline': deadline,
+        'documents': saved,
+        'requirements': [
+            'Minimum experience: ' + experience,
+            'Required turnover: ' + turnover
+            if turnover
+            else 'Turnover review required',
+        ],
+        'status': 'OPEN',
+        'bids': 0,
+        'created_at': now(),
+    }
+
+    records = load_records()
+    records['tenders'].append(tender)
+    records['audit'].append({
+        'event': 'TENDER_PUBLISHED',
+        'tender_id': tender['tender_id'],
+        'at': now(),
+        'documents': len(saved),
+    })
+
+    save_records(records)
+
+    return tender
 @app.post('/api/bids')
 async def create_bid(tender_id: str=Form(...), name: str=Form(...), email: str=Form(...), city: str=Form(...), experience: int=Form(...), bid_amount: str=Form(''), pan: str=Form(''), gstin: str=Form(''), declaration: str=Form(...), documents: List[UploadFile]=File(default=[]), user=Depends(bidder_user)):
     records=load_records(); tender=next((t for t in records['tenders'] if t['tender_id']==tender_id),None)
