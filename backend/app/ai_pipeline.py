@@ -162,23 +162,28 @@ def ollama_generate(prompt: str) -> str:
         raise RuntimeError(f"Ollama service is unreachable: {exc}") from exc
 
 
-def generate_with_fallback(prompt: str) -> tuple[str, str]:
-    """Try Gemini first, then configured Ollama; return response and provider name."""
+def generate_with_fallback(prompt: str) -> tuple[dict[str, Any], str]:
+    """Try Gemini first, then configured Ollama; validate JSON before accepting a provider response."""
     failures = []
+    providers = []
     if os.getenv("GEMINI_API_KEY", "").strip():
-        try:
-            return gemini_generate(prompt), "GEMINI"
-        except Exception as exc:
-            failures.append(f"Gemini: {str(exc)[:250]}")
+        providers.append(("GEMINI", gemini_generate))
     else:
         failures.append("Gemini: GEMINI_API_KEY is not configured")
     if os.getenv("OLLAMA_BASE_URL", "").strip():
-        try:
-            return ollama_generate(prompt), "OLLAMA"
-        except Exception as exc:
-            failures.append(f"Ollama: {str(exc)[:250]}")
+        providers.append(("OLLAMA", ollama_generate))
     else:
         failures.append("Ollama: OLLAMA_BASE_URL is not configured")
+
+    for provider, generate in providers:
+        try:
+            raw = generate(prompt)
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("AI provider returned JSON that was not an object")
+            return parsed, provider
+        except Exception as exc:
+            failures.append(f"{provider}: {str(exc)[:250]}")
     raise RuntimeError("All AI providers failed. " + " | ".join(failures))
 
 
@@ -218,8 +223,7 @@ def verify_documents(application: dict[str, Any], tender: dict[str, Any], upload
         f"SUBMITTED DOCUMENT EVIDENCE: {json.dumps(evidence, ensure_ascii=False)[:45000]}"
     )
     try:
-        raw, ai_provider = generate_with_fallback(prompt)
-        result = json.loads(raw)
+        result, ai_provider = generate_with_fallback(prompt)
         allowed = {"VERIFIED_FOR_REVIEW", "REQUIRES_MANUAL_REVIEW", "INCOMPLETE_EVIDENCE"}
         if result.get("overall_status") not in allowed:
             raise ValueError("Gemini returned an invalid status")
@@ -267,6 +271,5 @@ def answer_with_rag(query: str, sources: list[dict[str, Any]]) -> dict[str, Any]
         "Keep answers concise and cite the source filenames in the answer.\n\n"
         f"QUESTION: {query}\nEVIDENCE: {json.dumps(retrieved, ensure_ascii=False)}"
     )
-    raw, provider = generate_with_fallback(prompt)
-    result = json.loads(raw)
+    result, provider = generate_with_fallback(prompt)
     return {"answer": result.get("answer", ""), "insufficient_evidence": bool(result.get("insufficient_evidence", False)), "caveats": result.get("caveats", []), "sources": [{"name": x["source"], "document_type": x["document_type"], "chunk": x["chunk"]} for x in retrieved], "provider": f"BM25 + {provider}"}
