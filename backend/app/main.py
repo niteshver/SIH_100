@@ -180,6 +180,17 @@ async def create_tender(
     requirements: str = Form(""),
     experience: str = Form(""),
     turnover: str = Form(""),
+    eligibility_requirements: str = Form(""),
+    required_experience: str = Form(""),
+    minimum_turnover: str = Form(""),
+    bidder_documents: str = Form("[]"),
+    terms_conditions: str = Form("[]"),
+    category: str = Form("GENERAL"),
+    evaluation_method: str = Form("QUALITY_AND_COST"),
+    bid_security_required: str = Form("false"),
+    bid_security_amount: str = Form(""),
+    technical_requirements: str = Form("[]"),
+    evaluation_criteria: str = Form("[]"),
     documents: List[UploadFile] = File(default=[]),
     user=Depends(officer_user),
 ):
@@ -210,12 +221,32 @@ async def create_tender(
                 await store_file(upload, "tenders")
             )
 
-    # Accept requirements entered in the form, one per line
-    requirement_list = [
-        item.strip()
-        for item in requirements.splitlines()
-        if item.strip()
-    ]
+    # Accept both legacy plain-text and current structured frontend fields.
+    raw_requirements = eligibility_requirements or requirements
+    try:
+        parsed_requirements = json.loads(raw_requirements) if raw_requirements.strip().startswith("[") else None
+    except json.JSONDecodeError:
+        parsed_requirements = None
+    if isinstance(parsed_requirements, list):
+        requirement_list = [
+            str(item.get("text", "")).strip() if isinstance(item, dict) else str(item).strip()
+            for item in parsed_requirements
+        ]
+        requirement_list = [item for item in requirement_list if item]
+    else:
+        requirement_list = [item.strip() for item in raw_requirements.splitlines() if item.strip()]
+
+    experience = required_experience.strip() or experience.strip()
+    turnover = minimum_turnover.strip() or turnover.strip()
+    try:
+        required_docs = json.loads(bidder_documents or "[]")
+        terms = json.loads(terms_conditions or "[]")
+        technical = json.loads(technical_requirements or "[]")
+        criteria = json.loads(evaluation_criteria or "[]")
+        if not isinstance(required_docs, list) or not isinstance(terms, list):
+            raise ValueError("Tender documents and terms must be lists")
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(422, "Tender document requirements or terms are invalid")
 
     if experience.strip():
         requirement_list.append(
@@ -241,6 +272,15 @@ async def create_tender(
         "experience": experience.strip(),
         "turnover": turnover.strip(),
         "requirements": requirement_list,
+        "eligibility_requirements": requirement_list,
+        "bidder_documents": required_docs,
+        "terms_conditions": terms,
+        "category": category,
+        "evaluation_method": evaluation_method,
+        "bid_security_required": bid_security_required.strip().lower() == "true",
+        "bid_security_amount": bid_security_amount.strip(),
+        "technical_requirements": technical if isinstance(technical, list) else [],
+        "evaluation_criteria": criteria if isinstance(criteria, list) else [],
         "documents": saved_documents,
         "status": "OPEN",
         "bids": 0,
@@ -369,15 +409,15 @@ def create_application(payload: dict, user=Depends(bidder_user)):
     if not tender: raise HTTPException(404, 'Open tender not found')
     existing = next((a for a in records['applications'] if a.get('tender_id') == tender_id and a.get('bidder_id') == user['user_id'] and a.get('status') != 'SUBMITTED'), None)
     if existing:
-        existing.update({k: payload[k] for k in ('company','eligibility','documents','bid_amount') if k in payload}); save_records(records); return existing
-    app_record = {'application_id':'APP-' + secrets.token_hex(8), 'tender_id':tender_id, 'bidder_id':user['user_id'], 'bidder_name':user['name'], 'email':user['email'], 'company':payload.get('company',{}), 'eligibility':payload.get('eligibility',{}), 'documents':[], 'bid_amount':payload.get('bid_amount',''), 'status':'DRAFT', 'created_at':now(), 'updated_at':now()}
+        existing.update({k: payload[k] for k in ('company','eligibility','accepted_terms','bid_amount') if k in payload}); existing['updated_at'] = now(); save_records(records); return existing
+    app_record = {'application_id':'APP-' + secrets.token_hex(8), 'tender_id':tender_id, 'bidder_id':user['user_id'], 'bidder_name':user['name'], 'email':user['email'], 'company':payload.get('company',{}), 'eligibility':payload.get('eligibility',{}), 'documents':[], 'accepted_terms':payload.get('accepted_terms', []), 'bid_amount':payload.get('bid_amount',''), 'status':'DRAFT', 'created_at':now(), 'updated_at':now()}
     records['applications'].append(app_record); records['audit'].append({'event':'APPLICATION_DRAFT_CREATED','application_id':app_record['application_id'],'user_id':user['user_id'],'at':now()}); save_records(records); return app_record
 
 @app.put('/api/applications/{application_id}')
 def update_application(application_id: str, payload: dict, user=Depends(bidder_user)):
     records=load_records(); item=application_for(records, application_id, user)
     if item.get('status') == 'SUBMITTED': raise HTTPException(409, 'Submitted applications cannot be edited')
-    for key in ('company','eligibility','bid_amount'):
+    for key in ('company','eligibility','accepted_terms','bid_amount'):
         if key in payload: item[key]=payload[key]
     item['updated_at']=now(); save_records(records); return item
 
@@ -415,8 +455,9 @@ def run_application_verification(application_id: str):
     result = verify_documents(item, tender, UPLOADS)
     item['documents'] = result.pop('documents', item.get('documents', []))
     item['ai_review'] = result
-    item['verification_status'] = result.get('status', 'REQUIRES_MANUAL_REVIEW')
-    item['ai_review_status'] = 'COMPLETED' if result.get('status') != 'REQUIRES_MANUAL_REVIEW' else 'REQUIRES_MANUAL_REVIEW'
+    verification_status = result.get('overall_status') or result.get('status') or 'REQUIRES_MANUAL_REVIEW'
+    item['verification_status'] = verification_status
+    item['ai_review_status'] = 'COMPLETED' if verification_status != 'REQUIRES_MANUAL_REVIEW' else 'REQUIRES_MANUAL_REVIEW'
     item['verification_completed_at'] = now()
     records.setdefault('audit', []).append({
         'event': 'DOCUMENT_VERIFICATION_COMPLETED',
