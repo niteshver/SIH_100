@@ -212,6 +212,7 @@ async def store_zip(upload: UploadFile, folder: str, document_type: str = 'OTHER
 
 @app.post("/api/tenders")
 async def create_tender(
+    background_tasks: BackgroundTasks,
     name: str = Form(...),
     budget: str = Form(...),
     description: str = Form(...),
@@ -341,6 +342,12 @@ async def create_tender(
     })
 
     save_records(records)
+    background_tasks.add_task(
+        send_resend_email,
+        user.get('email', ''),
+        f"Tender published — {tender.get('name', 'Tender')}",
+        f"<p>Your tender <strong>{tender.get('name', 'Tender')}</strong> is now published.</p><p>Budget: {tender.get('budget', 'Not specified')}</p><p>Deadline: {tender.get('deadline', 'See tender details')}</p><p>Bidder applications and document verification status are available in your TenderHub workspace.</p>",
+    )
 
     return tender
 @app.post('/api/bids')
