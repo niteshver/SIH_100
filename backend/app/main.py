@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
 import hashlib, json, os, re, shutil, tempfile, zipfile, secrets, base64, hmac
-from .ai_pipeline import answer_with_rag, extract_text, verify_documents
+from ai_pipeline import answer_with_rag, extract_text, verify_documents
 SESSION_SECRET = os.getenv('SESSION_SECRET')
 if not SESSION_SECRET:
     raise RuntimeError('SESSION_SECRET must be configured')
