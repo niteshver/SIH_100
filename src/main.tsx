@@ -107,7 +107,7 @@ function TenderList({role,tenders,onCreate,onSelect}:{role:UserRole;tenders:Tend
     <div className="tender-card-top"><span className="tender-index">{String(index+1).padStart(2,'0')}</span><span className="tender-department">{t.department||'Procurement'}</span><span className={`tender-status ${t.status==='AWARDED'?'awarded':'open'}`}>{t.status==='AWARDED'?'Awarded':t.status||'OPEN'}</span></div>
     <div className="tender-card-main"><div className="tender-card-title"><h2>{t.name}</h2><p>{t.description||'No description provided.'}</p></div><span className="tender-arrow"><ArrowUpRight/></span></div>
     <div className="tender-meta"><span><small>ESTIMATED BUDGET</small><b>{money(t.budget)}</b></span><span><small>BID SUBMISSION DEADLINE</small><b>{date(t.deadline)}</b></span><span><small>REQUIREMENTS</small><b>{t.requirements?.length||0} listed</b></span></div>
-    <div className="tender-card-footer"><span><FileText/> {t.bidder_documents?.length||t.documents?.length||0} reference document types/files</span><span>View tender details <ArrowUpRight/></span></div>
+    <div className="tender-card-footer"><span><FileText/> {t.bidder_documents?.length||0} document requirements</span><span>View tender details <ArrowUpRight/></span></div>
    </button>)}</div>}
  </section>
 }
