@@ -148,6 +148,7 @@ def verify_documents(application: dict[str, Any], tender: dict[str, Any], upload
         for doc in updated_docs:
             doc["verification_status"] = "REQUIRES_MANUAL_REVIEW"
             doc["verification_message"] = "Gemini is not configured; no AI verification was performed."
+            doc.pop("extracted_text_preview", None)
         return {
             "status": "REQUIRES_MANUAL_REVIEW",
             "provider": "GEMINI",
@@ -183,9 +184,11 @@ def verify_documents(application: dict[str, Any], tender: dict[str, Any], upload
             doc["verification_status"] = ai_doc.get("status", "REQUIRES_MANUAL_REVIEW")
             doc["verification_findings"] = ai_doc.get("findings", [])
             doc["verification_confidence"] = ai_doc.get("confidence")
-            if not doc.get("extracted_text_preview"):
+            if doc.get("extraction_status") != "EXTRACTED":
                 doc["verification_status"] = "TEXT_UNAVAILABLE"
                 doc["verification_message"] = "Text could not be extracted; manual review or OCR is required."
+        for doc in updated_docs:
+            doc.pop("extracted_text_preview", None)
         result["documents"] = updated_docs
         result["provider"] = "GEMINI"
         result["human_review_required"] = True
@@ -197,6 +200,7 @@ def verify_documents(application: dict[str, Any], tender: dict[str, Any], upload
         for doc in updated_docs:
             doc["verification_status"] = "REQUIRES_MANUAL_REVIEW"
             doc["verification_message"] = "AI verification failed; human review is required."
+            doc.pop("extracted_text_preview", None)
         return {
             "status": "REQUIRES_MANUAL_REVIEW",
             "provider": "GEMINI",
