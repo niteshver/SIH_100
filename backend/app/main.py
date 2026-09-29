@@ -14,7 +14,12 @@ if not SESSION_SECRET:
 
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
 DEFAULT_FRONTEND_ORIGINS = 'https://chatlyme.xyz,https://www.chatlyme.xyz,http://localhost:5173,http://127.0.0.1:5173'
-configured_origins = [origin.strip().rstrip('/') for origin in os.getenv('FRONTEND_ORIGINS', DEFAULT_FRONTEND_ORIGINS).split(',') if origin.strip()]\n# Keep the deployed UI origins allowed even if a Railway override is incomplete.\n# Explicit extra origins can still be supplied through FRONTEND_ORIGINS.\nfor trusted_origin in ('https://chatlyme.xyz', 'https://www.chatlyme.xyz'):\n    if trusted_origin not in configured_origins:\n        configured_origins.append(trusted_origin)
+configured_origins = [origin.strip().rstrip('/') for origin in os.getenv('FRONTEND_ORIGINS', DEFAULT_FRONTEND_ORIGINS).split(',') if origin.strip()]
+# Keep the deployed UI origins allowed even if a Railway override is incomplete.
+# Explicit extra origins can still be supplied through FRONTEND_ORIGINS.
+for trusted_origin in ('https://chatlyme.xyz', 'https://www.chatlyme.xyz'):
+    if trusted_origin not in configured_origins:
+        configured_origins.append(trusted_origin)
 if '*' in configured_origins:
     raise RuntimeError('FRONTEND_ORIGINS must list explicit origins when credentials are enabled')
 app.add_middleware(
