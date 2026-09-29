@@ -6,7 +6,7 @@ client = TestClient(app)
 def test_health():
     response = client.get('/health')
     assert response.status_code == 200
-    assert response.json()['mode'] == 'demo'
+    assert response.json()['mode'] == 'connected'
 
 def test_report_is_human_review_only():
     report = client.get('/api/tenders/demo-tender/report').json()

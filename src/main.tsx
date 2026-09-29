@@ -6,7 +6,7 @@ import './index.css'
 
 type Screen = 'landing'|'login'|'register'|'officer'|'create-tender'|'tenders'|'bidder'|'apply'|'review'|'audit'
 type User = { user_id?: string; name:string; email:string; role:UserRole; organization?:string }
-type Tender = { tender_id:string; name:string; department?:string; budget:string; deadline?:string; experience:string; description:string; requirements?:string[]; status?:string; bids?:number }
+type Tender = { tender_id:string; name:string; department?:string; budget:string; deadline?:string; experience:string; description:string; requirements?:string[]; terms_conditions?:Array<{id?:string; text:string}>; bidder_documents?:Array<{document_type:string; name?:string; required?:boolean}>; status?:string; bids?:number; published_at?:string }
 type DocumentStatus = 'NOT_UPLOADED'|'UPLOADING'|'UPLOADED'|'VERIFICATION_PENDING'|'VERIFIED'|'REJECTED'|'VERIFICATION_FAILED'
 type Document = { document_id?:string; document_type:string; name?:string; original_filename?:string; upload_status?:string; verification_status?:string; verification_message?:string; rag_status?:string }
 type Application = { application_id?:string; tender_id:string; status:string; company:Record<string,string|number>; eligibility:Record<string,string|boolean>; documents:Document[]; bid_amount:string; ai_review?:Record<string,unknown> }

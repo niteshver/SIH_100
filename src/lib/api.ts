@@ -1,6 +1,7 @@
 const API_URL = (
-  import.meta.env.VITE_API_URL || "http://localhost:8000"
-).replace(/\/+$/, "");
+  import.meta.env.VITE_API_URL ||
+  "https://sih100-production-3f7d.up.railway.app"
+).replace(/\/+$/, "").replace(/\/api$/, "");
 
 export async function apiRequest<T = unknown>(
   path: string,
