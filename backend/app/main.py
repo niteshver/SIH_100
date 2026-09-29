@@ -262,7 +262,7 @@ async def create_tender(
             if turnover
             else 'Turnover review required',
         ],
-        'status': 'OPEN',
+        'status': 'OPEN' if tender_status == 'OPEN' else 'DRAFT',
         'bids': 0,
         'created_at': now(),
     }
@@ -372,9 +372,13 @@ def protected_document(application_id: str, document_id: str, user=Depends(curre
     return FileResponse(path, filename=doc.get('original_filename',doc.get('name','document')))
 
 @app.post('/api/applications/{application_id}/submit')
-def submit_application(application_id: str, user=Depends(bidder_user)):
+def submit_application(application_id: str, request: Request, user=Depends(bidder_user)):
     records=load_records(); item=application_for(records, application_id, user)
-    if item.get('status') == 'SUBMITTED': raise HTTPException(409,'Application already submitted')
+    idempotency_key = request.headers.get('Idempotency-Key', '').strip()
+    if item.get('status') == 'SUBMITTED':
+        if idempotency_key and item.get('submission_idempotency_key') == idempotency_key:
+            return {'application_id':application_id,'confirmation_number':item.get('confirmation_number'),'status':'SUBMITTED','verification_status':item.get('verification_status','PENDING_VERIFICATION'),'idempotent_replay':True}
+        raise HTTPException(409,'Application already submitted')
     company=item.get('company',{}); required=['name','authorized_person','email','mobile','city','experience_years','annual_turnover','pan','gstin']
     if any(not str(company.get(k,'')).strip() for k in required) or not item.get('bid_amount'): raise HTTPException(422,'Required company and bid fields are incomplete')
     if not all(item.get('eligibility',{}).get(k) for k in ('experience_confirmation','turnover_confirmation','compliance_declaration')): raise HTTPException(422,'Eligibility confirmations are incomplete')
@@ -385,7 +389,7 @@ def submit_application(application_id: str, user=Depends(bidder_user)):
     required_terms={str(term.get('id') or term.get('text')) for term in tender.get('terms_conditions', [])}
     accepted={str(term) for term in item.get('accepted_terms', [])}
     if required_terms and not required_terms.issubset(accepted): raise HTTPException(422,'All tender terms must be accepted')
-    item['status']='SUBMITTED'; item['submitted_at']=now(); records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now()}); save_records(records); return {'application_id':application_id,'status':'SUBMITTED'}
+    item['status']='SUBMITTED'; item['submitted_at']=now(); item['verification_status']='PENDING_VERIFICATION'; item['confirmation_number']='TH-' + secrets.token_hex(6).upper(); item['submission_idempotency_key']=idempotency_key or secrets.token_urlsafe(18); item['verification_jobs']=[{'status':'QUEUED','queued_at':now()}]; records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now(),'verification_status':'PENDING_VERIFICATION'}); save_records(records); return {'application_id':application_id,'confirmation_number':item['confirmation_number'],'status':'SUBMITTED','verification_status':'PENDING_VERIFICATION'}
 
 def owned_tender(records, tender_id, user):
     tender = next((t for t in records.get('tenders', []) if t.get('tender_id') == tender_id), None)
