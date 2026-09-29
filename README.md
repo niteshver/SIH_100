@@ -62,7 +62,7 @@ The cookie is intentionally HttpOnly. Do not work around session failures by sto
 
 ### Verify the deployment
 
-1. Open `https://sih100-production.up.railway.app/health`. Check `status: ok`, AI configuration flags, and `storage: volume_path_configured`.
+1. Open `https://api.chatlyme.xyz/health`. Check `status: ok`, AI configuration flags, and `storage: volume_path_configured`.
 2. Register a bidder account and sign in. Register an officer account separately.
 3. Publish a tender with at least one required document type and a future deadline.
 4. Sign in as the bidder, open the tender, upload every required document, accept the terms, save the draft, and submit the bid.
