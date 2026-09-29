@@ -1,9 +1,10 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request, Response, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request, Response, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
 import hashlib, json, os, re, shutil, tempfile, zipfile, secrets, base64, hmac
+from .ai_pipeline import answer_with_rag, extract_text, verify_documents
 SESSION_SECRET = os.getenv('SESSION_SECRET')
 if not SESSION_SECRET:
     raise RuntimeError('SESSION_SECRET must be configured')
@@ -300,8 +301,51 @@ def verify_document(document_id: str, user=Depends(current_user)):
 
 @app.post('/api/rag/query')
 def rag_query(query: str=Form(...), user=Depends(current_user)):
-    if not query.strip(): raise HTTPException(422, 'Query is required')
-    raise HTTPException(503, 'RAG processing is unavailable until an embedding and vector provider is configured')
+    if not query.strip():
+        raise HTTPException(422, 'Query is required')
+    records = load_records()
+    sources = []
+
+    # Tender documents: bidders can query open tenders; officers only their own.
+    for tender in records.get('tenders', []):
+        allowed = (tender.get('status') == 'OPEN' if user.get('role') == 'BIDDER'
+                   else tender.get('email') == user.get('email'))
+        if not allowed:
+            continue
+        for doc in tender.get('documents', []):
+            path = UPLOADS / 'tenders' / doc.get('stored_name', '')
+            sources.append({
+                'name': doc.get('original_filename') or doc.get('name'),
+                'document_type': doc.get('document_type'),
+                'text': extract_text(path),
+            })
+
+    # Application documents: bidders can query their own; officers only applications
+    # submitted to tenders they own.
+    for app_record in records.get('applications', []):
+        tender = next((t for t in records.get('tenders', [])
+                       if t.get('tender_id') == app_record.get('tender_id')), None)
+        owns_application = (
+            app_record.get('bidder_id') == user.get('user_id')
+            if user.get('role') == 'BIDDER'
+            else bool(tender and tender.get('email') == user.get('email'))
+        )
+        if not owns_application:
+            continue
+        for doc in app_record.get('documents', []):
+            path = UPLOADS / f"applications/{app_record.get('application_id')}" / doc.get('stored_name', '')
+            sources.append({
+                'name': doc.get('original_filename') or doc.get('name'),
+                'document_type': doc.get('document_type'),
+                'text': extract_text(path),
+            })
+
+    try:
+        return answer_with_rag(query.strip(), sources)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f'RAG request failed: {str(exc)[:300]}')
 def application_for(records, application_id, user, allow_officer=False):
     app_record = next((a for a in records.get('applications', []) if a.get('application_id') == application_id), None)
     if not app_record: raise HTTPException(404, 'Application not found')
@@ -354,8 +398,49 @@ def protected_document(application_id: str, document_id: str, user=Depends(curre
     from fastapi.responses import FileResponse
     return FileResponse(path, filename=doc.get('original_filename',doc.get('name','document')))
 
+def run_application_verification(application_id: str):
+    """Background verification so submitting bidders do not wait for the Gemini API."""
+    records = load_records()
+    item = next((a for a in records.get('applications', [])
+                 if a.get('application_id') == application_id), None)
+    if not item or item.get('status') != 'SUBMITTED':
+        return
+    tender = next((t for t in records.get('tenders', [])
+                   if t.get('tender_id') == item.get('tender_id')), None)
+    if not tender:
+        item['verification_status'] = 'REQUIRES_MANUAL_REVIEW'
+        item['verification_message'] = 'Tender record was not found.'
+        save_records(records)
+        return
+    result = verify_documents(item, tender, UPLOADS)
+    item['documents'] = result.pop('documents', item.get('documents', []))
+    item['ai_review'] = result
+    item['verification_status'] = result.get('status', 'REQUIRES_MANUAL_REVIEW')
+    item['ai_review_status'] = 'COMPLETED' if result.get('status') != 'REQUIRES_MANUAL_REVIEW' else 'REQUIRES_MANUAL_REVIEW'
+    item['verification_completed_at'] = now()
+    records.setdefault('audit', []).append({
+        'event': 'DOCUMENT_VERIFICATION_COMPLETED',
+        'application_id': application_id,
+        'verification_status': item['verification_status'],
+        'at': now(),
+        'provider': result.get('provider', 'GEMINI'),
+    })
+    save_records(records)
+
+
+@app.get('/api/applications/{application_id}')
+def get_application(application_id: str, user=Depends(bidder_user)):
+    records = load_records()
+    item = application_for(records, application_id, user)
+    # Do not expose internal storage paths or hashes to the bidder.
+    return {**item, 'documents': [
+        {k: v for k, v in doc.items() if k not in ('stored_name', 'sha256')}
+        for doc in item.get('documents', [])
+    ]}
+
+
 @app.post('/api/applications/{application_id}/submit')
-def submit_application(application_id: str, request: Request, user=Depends(bidder_user)):
+def submit_application(application_id: str, request: Request, background_tasks: BackgroundTasks, user=Depends(bidder_user)):
     records=load_records(); item=application_for(records, application_id, user)
     idempotency_key = request.headers.get('Idempotency-Key', '').strip()
     if item.get('status') == 'SUBMITTED':
@@ -372,7 +457,9 @@ def submit_application(application_id: str, request: Request, user=Depends(bidde
     required_terms={str(term.get('id') or term.get('text')) for term in tender.get('terms_conditions', [])}
     accepted={str(term) for term in item.get('accepted_terms', [])}
     if required_terms and not required_terms.issubset(accepted): raise HTTPException(422,'All tender terms must be accepted')
-    item['status']='SUBMITTED'; item['submitted_at']=now(); item['verification_status']='PENDING_VERIFICATION'; item['confirmation_number']='TH-' + secrets.token_hex(6).upper(); item['submission_idempotency_key']=idempotency_key or secrets.token_urlsafe(18); item['verification_jobs']=[{'status':'QUEUED','queued_at':now()}]; records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now(),'verification_status':'PENDING_VERIFICATION'}); save_records(records); return {'application_id':application_id,'confirmation_number':item['confirmation_number'],'status':'SUBMITTED','verification_status':'PENDING_VERIFICATION'}
+    item['status']='SUBMITTED'; item['submitted_at']=now(); item['verification_status']='PENDING_VERIFICATION'; item['confirmation_number']='TH-' + secrets.token_hex(6).upper(); item['submission_idempotency_key']=idempotency_key or secrets.token_urlsafe(18); item['verification_jobs']=[{'status':'QUEUED','queued_at':now()}]; records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now(),'verification_status':'PENDING_VERIFICATION'}); save_records(records)
+    background_tasks.add_task(run_application_verification, application_id)
+    return {'application_id':application_id,'confirmation_number':item['confirmation_number'],'status':'SUBMITTED','verification_status':'PENDING_VERIFICATION','message':'Application submitted. Document verification has started in the background.'}
 
 def owned_tender(records, tender_id, user):
     tender = next((t for t in records.get('tenders', []) if t.get('tender_id') == tender_id), None)
