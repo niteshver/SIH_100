@@ -27,7 +27,7 @@ app.add_middleware(
     allow_origins=configured_origins,
     allow_credentials='*' not in configured_origins,
     allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allow_headers=['*'],
+    allow_headers=['Content-Type', 'Authorization', 'Idempotency-Key'],
 )
 UPLOADS = Path(os.getenv('UPLOAD_DIR', str(Path(__file__).resolve().parent / 'uploads')))
 UPLOADS.mkdir(parents=True, exist_ok=True)
@@ -550,9 +550,9 @@ def submit_application(application_id: str, request: Request, background_tasks: 
     records=load_records(); item=application_for(records, application_id, user)
     idempotency_key = request.headers.get('Idempotency-Key', '').strip()
     if item.get('status') == 'SUBMITTED':
-        if idempotency_key and item.get('submission_idempotency_key') == idempotency_key:
-            return {'application_id':application_id,'confirmation_number':item.get('confirmation_number'),'status':'SUBMITTED','verification_status':item.get('verification_status','PENDING_VERIFICATION'),'idempotent_replay':True}
-        raise HTTPException(409,'Application already submitted')
+        # The browser can lose its connection after the server commits the submission.
+        # Return the existing receipt on retry instead of creating duplicate submissions.
+        return {'application_id':application_id,'confirmation_number':item.get('confirmation_number'),'status':'SUBMITTED','verification_status':item.get('verification_status','PENDING_VERIFICATION'),'idempotent_replay':True}
     company=item.get('company',{}); required=['name','authorized_person','email','mobile','city','experience_years','annual_turnover','pan','gstin']
     if any(not str(company.get(k,'')).strip() for k in required) or not item.get('bid_amount'): raise HTTPException(422,'Required company and bid fields are incomplete')
     if not all(item.get('eligibility',{}).get(k) for k in ('experience_confirmation','turnover_confirmation','compliance_declaration')): raise HTTPException(422,'Eligibility confirmations are incomplete')
