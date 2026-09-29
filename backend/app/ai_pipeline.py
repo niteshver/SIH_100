@@ -187,12 +187,13 @@ def verify_documents(application: dict[str, Any], tender: dict[str, Any], upload
             if doc.get("extraction_status") != "EXTRACTED":
                 doc["verification_status"] = "TEXT_UNAVAILABLE"
                 doc["verification_message"] = "Text could not be extracted; manual review or OCR is required."
+        text_unavailable = any(doc.get("extraction_status") != "EXTRACTED" for doc in updated_docs)
         for doc in updated_docs:
             doc.pop("extracted_text_preview", None)
         result["documents"] = updated_docs
         result["provider"] = "GEMINI"
         result["human_review_required"] = True
-        if any(not doc.get("extracted_text_preview") for doc in updated_docs):
+        if text_unavailable:
             result["overall_status"] = "REQUIRES_MANUAL_REVIEW"
             result["summary"] = (str(result.get("summary", "")).strip() + " Some documents have no extractable text and require manual review/OCR.").strip()
         return result
