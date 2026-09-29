@@ -27,7 +27,7 @@ app.add_middleware(
     allow_origins=configured_origins,
     # Keep the production web app origins explicitly trusted even when Railway's
     # FRONTEND_ORIGINS value is accidentally incomplete.
-    allow_origin_regex=r"^https://(www\\.)?chatlyme\\.xyz$",
+    allow_origin_regex=r"^https://(www\.)?chatlyme\.xyz$",
     allow_credentials=True,
     allow_methods=["*"],
     # Multipart document uploads and future API headers must pass preflight.
