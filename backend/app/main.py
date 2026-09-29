@@ -563,9 +563,35 @@ def submit_application(application_id: str, request: Request, background_tasks: 
     if any(not str(company.get(k,'')).strip() for k in required) or not item.get('bid_amount'): raise HTTPException(422,'Required company and bid fields are incomplete')
     if not all(item.get('eligibility',{}).get(k) for k in ('experience_confirmation','turnover_confirmation','compliance_declaration')): raise HTTPException(422,'Eligibility confirmations are incomplete')
     tender = tender_for_application(records, item.get('tender_id'))
-    required_docs={d.get('document_type') for d in tender.get('bidder_documents', []) if d.get('required', True)}
-    uploaded={d.get('document_type') for d in item.get('documents',[]) if d.get('upload_status')=='UPLOADED'}
-    if required_docs and not required_docs.issubset(uploaded): raise HTTPException(422,'Required documents are incomplete')
+    tender_docs = tender.get('bidder_documents', [])
+    required_doc_rows = [
+        d for d in tender_docs
+        if d.get('document_type')
+        and d.get('required', True) is not False
+        and str(d.get('required', True)).strip().lower() not in {'false', '0', 'no'}
+    ]
+    # Compare normalized types so casing/whitespace differences cannot make a
+    # successfully uploaded document look missing.
+    required_docs = {
+        str(d.get('document_type', '')).strip().upper()
+        for d in required_doc_rows
+    }
+    uploaded = {
+        str(d.get('document_type', '')).strip().upper()
+        for d in item.get('documents', [])
+        if str(d.get('upload_status', '')).strip().upper() == 'UPLOADED'
+    }
+    missing_docs = required_docs - uploaded
+    if missing_docs:
+        missing_labels = [
+            str(d.get('name') or d.get('document_type')).strip()
+            for d in required_doc_rows
+            if str(d.get('document_type', '')).strip().upper() in missing_docs
+        ]
+        raise HTTPException(
+            422,
+            'Required documents are incomplete. Upload: ' + ', '.join(missing_labels)
+        )
     required_terms={str(term.get('id') or term.get('text')) for term in tender.get('terms_conditions', [])}
     accepted={str(term) for term in item.get('accepted_terms', [])}
     if required_terms and not required_terms.issubset(accepted): raise HTTPException(422,'All tender terms must be accepted')
