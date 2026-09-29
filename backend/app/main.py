@@ -492,9 +492,18 @@ def officer_bid_documents(application_id: str, user=Depends(officer_user)):
 
 @app.post('/api/bids/{application_id}/ai-review')
 def ai_review(application_id: str, user=Depends(officer_user)):
-    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); owned_tender(records, item.get('tender_id'), user)
-    docs=item.get('documents', []); required_docs={'PAN_CARD':'PAN Card','GST_CERTIFICATE':'GST Certificate','COMPANY_REGISTRATION':'Company Registration Certificate','ADDRESS_PROOF':'Address Proof','WORK_EXPERIENCE':'Experience Certificate','FINANCIAL_STATEMENT':'Turnover/Financial Certificate'}; missing=[name for code,name in required_docs.items() if not any(d.get('document_type') == code for d in docs)]
-    item['ai_review_status']='AI_REVIEW_COMPLETED'; item['ai_review']={'status':'AI_REVIEW_COMPLETED','missing_documents':missing,'warnings':['AI assistance only. Final verification requires authorized human review.'] if not missing else ['Required evidence is missing. Manual review required.'],'completed_at':now()}; records['audit'].append({'event':'AI_REVIEW_COMPLETED','application_id':application_id,'user_id':user['user_id'],'at':now()}); save_records(records); return item['ai_review']
+    records=load_records()
+    item=application_for(records, application_id, user, allow_officer=True)
+    tender=owned_tender(records, item.get('tender_id'), user)
+    result=verify_documents(item, tender, UPLOADS)
+    item['documents']=result.pop('documents', item.get('documents', []))
+    item['ai_review']=result
+    item['verification_status']=result.get('status', 'REQUIRES_MANUAL_REVIEW')
+    item['ai_review_status']='COMPLETED' if result.get('status') != 'REQUIRES_MANUAL_REVIEW' else 'REQUIRES_MANUAL_REVIEW'
+    item['verification_completed_at']=now()
+    records['audit'].append({'event':'AI_REVIEW_COMPLETED','application_id':application_id,'user_id':user['user_id'],'at':now(),'verification_status':item['verification_status']})
+    save_records(records)
+    return result
 
 @app.post('/api/tenders/{tender_id}/award')
 def award_tender(tender_id: str, application_id: str = Form(...), user=Depends(officer_user)):
