@@ -169,111 +169,94 @@ async def store_zip(upload: UploadFile, folder: str, document_type: str = 'OTHER
     except zipfile.BadZipFile: raise HTTPException(400, 'Invalid ZIP archive')
     finally: shutil.rmtree(temp, ignore_errors=True)
 
-@app.post('/api/tenders')
+@app.post("/api/tenders")
 async def create_tender(
     name: str = Form(...),
-    experience: str = Form(...),
     budget: str = Form(...),
     description: str = Form(...),
-    department: str = Form('Procurement'),
     deadline: str = Form(...),
-    turnover: str = Form(''),
-    required_experience: str = Form(''),
-    minimum_turnover: str = Form(''),
-    bid_security_required: str = Form('false'),
-    bid_security_amount: str = Form(''),
-    category: str = Form('GENERAL'),
-    evaluation_method: str = Form('QUALITY_AND_COST'),
-    tender_status: str = Form('DRAFT'),
-    eligibility_requirements: str = Form('[]'),
-    bidder_documents: str = Form('[]'),
-    terms_conditions: str = Form('[]'),
-    technical_requirements: str = Form('[]'),
-    evaluation_criteria: str = Form('[]'),
+    department: str = Form("Procurement"),
+    requirements: str = Form(""),
+    experience: str = Form(""),
+    turnover: str = Form(""),
     documents: List[UploadFile] = File(default=[]),
     user=Depends(officer_user),
 ):
+    # Validate required fields
     name = name.strip()
-    experience = experience.strip()
     budget = budget.strip()
     description = description.strip()
-    department = department.strip()
     deadline = deadline.strip()
-    turnover = turnover.strip()
-    required_experience = required_experience.strip() or experience
-    minimum_turnover = minimum_turnover.strip() or turnover
-    category = category.strip() or 'GENERAL'
-    evaluation_method = evaluation_method.strip() or 'QUALITY_AND_COST'
-    try:
-        eligibility = json.loads(eligibility_requirements or '[]')
-        bidder_doc_definitions = json.loads(bidder_documents or '[]')
-        terms = json.loads(terms_conditions or '[]')
-        technical = json.loads(technical_requirements or '[]')
-        criteria = json.loads(evaluation_criteria or '[]')
-    except json.JSONDecodeError:
-        raise HTTPException(422, 'Structured tender fields must be valid JSON')
-    if not isinstance(eligibility, list) or any(not isinstance(item, dict) or not str(item.get('text', '')).strip() for item in eligibility):
-        raise HTTPException(422, 'Each eligibility requirement needs text')
-    if not isinstance(bidder_doc_definitions, list) or any(not isinstance(item, dict) or not item.get('document_type') for item in bidder_doc_definitions):
-        raise HTTPException(422, 'Each bidder document needs a document type')
-    try:
-        deadline_value = datetime.fromisoformat(deadline.replace('Z', '+00:00'))
-        if deadline_value.tzinfo is None: deadline_value = deadline_value.replace(tzinfo=timezone.utc)
-        if deadline_value <= datetime.now(timezone.utc): raise HTTPException(422, 'Deadline must be in the future')
-    except ValueError:
-        raise HTTPException(422, 'Deadline must be a valid date')
-    if len(name) < 4: raise HTTPException(422, 'Tender title is required')
-    if len(description) < 10: raise HTTPException(422, 'Tender description is required')
 
-    saved = []
+    if len(name) < 4:
+        raise HTTPException(422, "Tender title must contain at least 4 characters")
+
+    if not budget:
+        raise HTTPException(422, "Estimated budget is required")
+
+    if not description:
+        raise HTTPException(422, "Description is required")
+
+    if not deadline:
+        raise HTTPException(422, "Bid deadline is required")
+
+    # Save uploaded files before confirming publication
+    saved_documents = []
 
     for upload in documents:
         if upload and upload.filename:
-            saved.append(await store_file(upload, 'tenders'))
+            saved_documents.append(
+                await store_file(upload, "tenders")
+            )
+
+    # Accept requirements entered in the form, one per line
+    requirement_list = [
+        item.strip()
+        for item in requirements.splitlines()
+        if item.strip()
+    ]
+
+    if experience.strip():
+        requirement_list.append(
+            f"Minimum experience: {experience.strip()}"
+        )
+
+    if turnover.strip():
+        requirement_list.append(
+            f"Required turnover: {turnover.strip()}"
+        )
 
     tender = {
-        'tender_id': f'TND-{datetime.now().strftime("%Y%m%d%H%M%S")}',
-        'name': name,
-        'email': user['email'],
-        'experience': experience,
-        'turnover': turnover,
-        'required_experience': required_experience,
-        'minimum_turnover': minimum_turnover,
-        'bid_security_required': bid_security_required.lower() in {'true', 'yes', '1', 'on'},
-        'bid_security_amount': bid_security_amount.strip(),
-        'category': category,
-        'evaluation_method': evaluation_method,
-        'technical_requirements': technical,
-        'evaluation_criteria': criteria,
-        'eligibility_requirements': eligibility,
-        'bidder_documents': bidder_doc_definitions,
-        'optional_documents': [d for d in bidder_doc_definitions if not d.get('required', True)],
-        'terms_conditions': terms,
-        'tender_status': tender_status if tender_status in {'DRAFT', 'OPEN'} else 'DRAFT',
-        'turnover': turnover,
-        'budget': budget,
-        'description': description,
-        'department': department,
-        'deadline': deadline,
-        'documents': saved,
-        'requirements': [
-            'Minimum experience: ' + experience,
-            'Required turnover: ' + turnover
-            if turnover
-            else 'Turnover review required',
-        ],
-        'status': 'OPEN' if tender_status == 'OPEN' else 'DRAFT',
-        'bids': 0,
-        'created_at': now(),
+        "tender_id": (
+            f"TND-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+        ),
+        "name": name,
+        "email": user["email"],
+        "created_by": user["user_id"],
+        "department": department.strip() or "Procurement",
+        "budget": budget,
+        "description": description,
+        "deadline": deadline,
+        "experience": experience.strip(),
+        "turnover": turnover.strip(),
+        "requirements": requirement_list,
+        "documents": saved_documents,
+        "status": "OPEN",
+        "bids": 0,
+        "created_at": now(),
     }
 
     records = load_records()
-    records['tenders'].append(tender)
-    records['audit'].append({
-        'event': 'TENDER_PUBLISHED',
-        'tender_id': tender['tender_id'],
-        'at': now(),
-        'documents': len(saved),
+    records.setdefault("tenders", [])
+    records.setdefault("audit", [])
+
+    records["tenders"].append(tender)
+    records["audit"].append({
+        "event": "TENDER_PUBLISHED",
+        "tender_id": tender["tender_id"],
+        "user_id": user["user_id"],
+        "at": now(),
+        "documents": len(saved_documents),
     })
 
     save_records(records)
