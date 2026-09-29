@@ -25,9 +25,15 @@ if '*' in configured_origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_origins,
-    allow_credentials='*' not in configured_origins,
-    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allow_headers=['Content-Type', 'Authorization', 'Idempotency-Key'],
+    # Keep the production web app origins explicitly trusted even when Railway's
+    # FRONTEND_ORIGINS value is accidentally incomplete.
+    allow_origin_regex=r"^https://(www\\.)?chatlyme\\.xyz$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    # Multipart document uploads and future API headers must pass preflight.
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+    max_age=600,
 )
 UPLOADS = Path(os.getenv('UPLOAD_DIR', str(Path(__file__).resolve().parent / 'uploads')))
 UPLOADS.mkdir(parents=True, exist_ok=True)
