@@ -13,11 +13,11 @@ if not SESSION_SECRET:
     raise RuntimeError('SESSION_SECRET must be configured')
 
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
-DEFAULT_FRONTEND_ORIGINS = 'https://chatlme.xyz,https://www.chatlme.xyz,https://chatlyme.xyz,https://www.chatlyme.xyz,http://localhost:5173,http://127.0.0.1:5173'
+DEFAULT_FRONTEND_ORIGINS = 'https://chatlyme.xyz,https://www.chatlyme.xyz,http://localhost:5173,http://127.0.0.1:5173'
 configured_origins = [origin.strip().rstrip('/') for origin in os.getenv('FRONTEND_ORIGINS', DEFAULT_FRONTEND_ORIGINS).split(',') if origin.strip()]
 # Keep the deployed UI origins allowed even if a Railway override is incomplete.
 # Explicit extra origins can still be supplied through FRONTEND_ORIGINS.
-for trusted_origin in ('https://chatlme.xyz', 'https://www.chatlme.xyz', 'https://chatlyme.xyz', 'https://www.chatlyme.xyz'):
+for trusted_origin in ('https://chatlyme.xyz', 'https://www.chatlyme.xyz'):
     if trusted_origin not in configured_origins:
         configured_origins.append(trusted_origin)
 if '*' in configured_origins:
@@ -27,7 +27,7 @@ app.add_middleware(
     allow_origins=configured_origins,
     # Keep the production web app origins explicitly trusted even when Railway's
     # FRONTEND_ORIGINS value is accidentally incomplete.
-    allow_origin_regex=r"^https://(www\.)?chatl(?:y)?me\.xyz$",
+    allow_origin_regex=r"^https://(www\.)?chatlyme\.xyz$",
     allow_credentials=True,
     allow_methods=["*"],
     # Multipart document uploads and future API headers must pass preflight.
