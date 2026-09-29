@@ -42,7 +42,7 @@ Attach a Railway Volume to the backend service at mount path `/data`. Set `UPLOA
 
 ### Frontend service variables
 
-- `VITE_API_URL=https://sih100-production.up.railway.app` (use the active public domain shown in the backend service's Networking settings).
+- `VITE_API_URL=https://api.chatlyme.xyz` after attaching that custom domain to the backend Railway service below.
 - Because `VITE_API_URL` is a build-time variable, redeploy/rebuild the frontend after changing it.
 
 ### Required: same-site API domain for reliable login sessions
