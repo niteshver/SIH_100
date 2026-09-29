@@ -189,6 +189,9 @@ def verify_documents(application: dict[str, Any], tender: dict[str, Any], upload
         result["documents"] = updated_docs
         result["provider"] = "GEMINI"
         result["human_review_required"] = True
+        if any(not doc.get("extracted_text_preview") for doc in updated_docs):
+            result["overall_status"] = "REQUIRES_MANUAL_REVIEW"
+            result["summary"] = (str(result.get("summary", "")).strip() + " Some documents have no extractable text and require manual review/OCR.").strip()
         return result
     except Exception as exc:
         for doc in updated_docs:
