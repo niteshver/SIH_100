@@ -142,7 +142,7 @@ async def store_file(upload: UploadFile, folder: str, document_type: str = 'OTHE
     if ext not in ALLOWED: raise HTTPException(415, 'Accepted formats: PDF, DOC, DOCX, XLS, XLSX, JPG, JPEG, PNG and ZIP')
     data = await upload.read()
     if len(data) > MAX_FILE: raise HTTPException(413, 'File exceeds 10 MB limit')
-    destination = UPLOADS / folder; destination.mkdir(exist_ok=True)
+    destination = UPLOADS / folder; destination.mkdir(parents=True, exist_ok=True)
     unique = f'{hashlib.sha256(data).hexdigest()[:12]}-{name}'
     path = destination / unique; path.write_bytes(data)
     return {'document_id':'DOC-' + secrets.token_hex(8),'name':name,'original_filename':name,'stored_name':unique,'size':len(data),'sha256':hashlib.sha256(data).hexdigest(),'document_type':document_type,'upload_status':'UPLOADED','verification_status':'PENDING','verification_message':'Verification has not started','rag_status':'NOT_STARTED','created_at':now(),'updated_at':now()}
@@ -160,7 +160,7 @@ async def store_zip(upload: UploadFile, folder: str, document_type: str = 'OTHER
             if len(members) > 50: raise HTTPException(413, 'ZIP contains too many files')
             total = sum(m.file_size for m in members)
             if total > 50 * 1024 * 1024: raise HTTPException(413, 'Extracted ZIP content exceeds 50 MB')
-            output=[]; destination=UPLOADS/folder; destination.mkdir(exist_ok=True)
+            output=[]; destination=UPLOADS/folder; destination.mkdir(parents=True, exist_ok=True)
             for member in members:
                 name=safe_name(member.filename); ext=extension(name)
                 if ext not in ALLOWED: raise HTTPException(415, f'Unsupported ZIP file: {name}')
