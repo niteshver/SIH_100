@@ -466,7 +466,12 @@ async def application_document(application_id: str, file: UploadFile=File(...), 
 
 @app.get('/api/applications/{application_id}/documents/{document_id}')
 def protected_document(application_id: str, document_id: str, user=Depends(current_user)):
-    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); doc=next((d for d in item.get('documents',[]) if d.get('document_id')==document_id),None)
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True)
+    if user.get('role') == 'OFFICER':
+        tender = tender_for_application(records, item.get('tender_id'))
+        if tender.get('email') != user.get('email'):
+            raise HTTPException(403, 'Document access denied for this tender')
+    doc=next((d for d in item.get('documents',[]) if d.get('document_id')==document_id),None)
     if not doc: raise HTTPException(404,'Document not found')
     path=UPLOADS / f'applications/{application_id}' / doc.get('stored_name','')
     if not path.exists(): raise HTTPException(404,'Stored document not found')
@@ -563,7 +568,13 @@ def owned_tender(records, tender_id, user):
     return tender
 
 def application_public(item):
-    return {k: v for k, v in item.items() if k not in ('bidder_id',)}
+    # Officer UI gets document metadata but never internal storage paths or hashes.
+    public = {k: v for k, v in item.items() if k not in ('bidder_id', 'submission_idempotency_key')}
+    public['documents'] = [
+        {k: v for k, v in doc.items() if k not in ('stored_name', 'sha256', 'extracted_text_preview')}
+        for doc in item.get('documents', [])
+    ]
+    return public
 
 @app.get('/api/officer/bids')
 def officer_bids(user=Depends(officer_user)):
@@ -571,7 +582,7 @@ def officer_bids(user=Depends(officer_user)):
     for item in records.get('applications', []):
         tender = next((t for t in records.get('tenders', []) if t.get('tender_id') == item.get('tender_id')), None)
         if tender and tender.get('email') == user.get('email'):
-            result.append({**application_public(item), 'tender_title': tender.get('name'), 'department': tender.get('department'), 'deadline': tender.get('deadline'), 'document_verification_status': 'PENDING' if item.get('documents') else 'DOCUMENTS_PENDING', 'ai_review_status': item.get('ai_review_status', 'NOT_STARTED')})
+            result.append({**application_public(item), 'tender_title': tender.get('name'), 'department': tender.get('department'), 'deadline': tender.get('deadline'), 'document_verification_status': item.get('verification_status', 'PENDING_VERIFICATION' if item.get('documents') else 'DOCUMENTS_PENDING'), 'ai_review_status': item.get('ai_review_status', 'NOT_STARTED')})
     return result
 
 @app.get('/api/bids/{application_id}')
