@@ -13,7 +13,8 @@ if not SESSION_SECRET:
     raise RuntimeError('SESSION_SECRET must be configured')
 
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
-configured_origins = [origin.strip() for origin in os.getenv('FRONTEND_ORIGINS', 'http://localhost:5173').split(',') if origin.strip()]
+DEFAULT_FRONTEND_ORIGINS = 'https://chatlyme.xyz,https://www.chatlyme.xyz,http://localhost:5173,http://127.0.0.1:5173'
+configured_origins = [origin.strip().rstrip('/') for origin in os.getenv('FRONTEND_ORIGINS', DEFAULT_FRONTEND_ORIGINS).split(',') if origin.strip()]
 if '*' in configured_origins:
     raise RuntimeError('FRONTEND_ORIGINS must list explicit origins when credentials are enabled')
 app.add_middleware(
