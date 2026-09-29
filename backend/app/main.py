@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
-import hashlib, json, os, re, shutil, tempfile, zipfile, secrets, base64, hmac
+import hashlib, json, os, re, shutil, tempfile, zipfile, secrets, base64, hmac, urllib.request, urllib.error
 try:
     from .ai_pipeline import answer_with_rag, extract_text, verify_documents
 except ImportError:  # Supports Uvicorn launched with backend/app as its working directory.
@@ -15,6 +15,11 @@ if not SESSION_SECRET:
 app = FastAPI(title='SIH26100 TenderHub API', version='2.0.0')
 DEFAULT_FRONTEND_ORIGINS = 'https://chatlyme.xyz,https://www.chatlyme.xyz,http://localhost:5173,http://127.0.0.1:5173'
 configured_origins = [origin.strip().rstrip('/') for origin in os.getenv('FRONTEND_ORIGINS', DEFAULT_FRONTEND_ORIGINS).split(',') if origin.strip()]
+# Keep the deployed UI origins allowed even if a Railway override is incomplete.
+# Explicit extra origins can still be supplied through FRONTEND_ORIGINS.
+for trusted_origin in ('https://chatlyme.xyz', 'https://www.chatlyme.xyz'):
+    if trusted_origin not in configured_origins:
+        configured_origins.append(trusted_origin)
 if '*' in configured_origins:
     raise RuntimeError('FRONTEND_ORIGINS must list explicit origins when credentials are enabled')
 app.add_middleware(
@@ -33,6 +38,37 @@ DOCUMENT_TYPES = {'TENDER_NOTICE', 'RFP_DOCUMENT', 'TECHNICAL_SPECIFICATIONS', '
 MAX_ZIP = 25 * 1024 * 1024
 
 def now(): return datetime.now(timezone.utc).isoformat()
+
+def send_resend_email(to_email: str, subject: str, html: str):
+    """Send an optional transactional email; absence/provider failure never breaks a bid."""
+    api_key = os.getenv('RESEND_API_KEY', '').strip()
+    from_email = os.getenv('RESEND_FROM_EMAIL', '').strip()
+    if not api_key or not from_email or not to_email:
+        return {'sent': False, 'reason': 'Resend is not configured'}
+    payload = json.dumps({'from': from_email, 'to': [to_email], 'subject': subject, 'html': html}).encode()
+    request = urllib.request.Request(
+        'https://api.resend.com/emails', data=payload,
+        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return {'sent': 200 <= response.status < 300}
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        # Do not log API keys or block submission/verification on email outages.
+        return {'sent': False, 'reason': str(exc)[:200]}
+
+def email_verification_update(application: dict, tender: dict, status: str):
+    """Send a concise status email after verification completes."""
+    subject = f"TenderHub verification update — {tender.get('name', 'your application')}"
+    html = (
+        f"<p>Hello {application.get('bidder_name') or application.get('company', {}).get('name', 'Bidder')},</p>"
+        f"<p>Document review for <strong>{tender.get('name', 'your tender')}</strong> has finished.</p>"
+        f"<p>Status: <strong>{status}</strong></p>"
+        f"<p>This is an AI-assisted evidence review, not a legal authenticity determination. "
+        f"A procurement officer must complete the final review.</p>"
+    )
+    return send_resend_email(application.get('email', ''), subject, html)
 def load_records():
     if DATA.exists():
         data = json.loads(DATA.read_text())
@@ -176,6 +212,7 @@ async def store_zip(upload: UploadFile, folder: str, document_type: str = 'OTHER
 
 @app.post("/api/tenders")
 async def create_tender(
+    background_tasks: BackgroundTasks,
     name: str = Form(...),
     budget: str = Form(...),
     description: str = Form(...),
@@ -305,6 +342,12 @@ async def create_tender(
     })
 
     save_records(records)
+    background_tasks.add_task(
+        send_resend_email,
+        user.get('email', ''),
+        f"Tender published — {tender.get('name', 'Tender')}",
+        f"<p>Your tender <strong>{tender.get('name', 'Tender')}</strong> is now published.</p><p>Budget: {tender.get('budget', 'Not specified')}</p><p>Deadline: {tender.get('deadline', 'See tender details')}</p><p>Bidder applications and document verification status are available in your TenderHub workspace.</p>",
+    )
 
     return tender
 @app.post('/api/bids')
@@ -435,7 +478,12 @@ async def application_document(application_id: str, file: UploadFile=File(...), 
 
 @app.get('/api/applications/{application_id}/documents/{document_id}')
 def protected_document(application_id: str, document_id: str, user=Depends(current_user)):
-    records=load_records(); item=application_for(records, application_id, user, allow_officer=True); doc=next((d for d in item.get('documents',[]) if d.get('document_id')==document_id),None)
+    records=load_records(); item=application_for(records, application_id, user, allow_officer=True)
+    if user.get('role') == 'OFFICER':
+        tender = tender_for_application(records, item.get('tender_id'))
+        if tender.get('email') != user.get('email'):
+            raise HTTPException(403, 'Document access denied for this tender')
+    doc=next((d for d in item.get('documents',[]) if d.get('document_id')==document_id),None)
     if not doc: raise HTTPException(404,'Document not found')
     path=UPLOADS / f'applications/{application_id}' / doc.get('stored_name','')
     if not path.exists(): raise HTTPException(404,'Stored document not found')
@@ -456,21 +504,34 @@ def run_application_verification(application_id: str):
         item['verification_message'] = 'Tender record was not found.'
         save_records(records)
         return
-    result = verify_documents(item, tender, UPLOADS)
-    item['documents'] = result.pop('documents', item.get('documents', []))
-    item['ai_review'] = result
-    verification_status = result.get('overall_status') or result.get('status') or 'REQUIRES_MANUAL_REVIEW'
-    item['verification_status'] = verification_status
-    item['ai_review_status'] = 'COMPLETED' if verification_status != 'REQUIRES_MANUAL_REVIEW' else 'REQUIRES_MANUAL_REVIEW'
-    item['verification_completed_at'] = now()
+    try:
+        result = verify_documents(item, tender, UPLOADS)
+        item['documents'] = result.pop('documents', item.get('documents', []))
+        item['ai_review'] = result
+        verification_status = result.get('overall_status') or result.get('status') or 'REQUIRES_MANUAL_REVIEW'
+        item['verification_status'] = verification_status
+        item['ai_review_status'] = 'COMPLETED' if verification_status != 'REQUIRES_MANUAL_REVIEW' else 'REQUIRES_MANUAL_REVIEW'
+        item['verification_completed_at'] = now()
+        provider = result.get('provider', 'NONE')
+    except Exception as exc:
+        # A provider/network/parse error must not leave the application permanently pending.
+        item['verification_status'] = 'REQUIRES_MANUAL_REVIEW'
+        item['ai_review_status'] = 'FAILED_REQUIRES_MANUAL_REVIEW'
+        item['verification_message'] = f'Automated verification failed; officer review is required. {str(exc)[:250]}'
+        item['verification_completed_at'] = now()
+        provider = 'NONE'
+        for document in item.get('documents', []):
+            document['verification_status'] = 'REQUIRES_MANUAL_REVIEW'
+            document['verification_message'] = 'Automated verification failed; officer review is required.'
     records.setdefault('audit', []).append({
         'event': 'DOCUMENT_VERIFICATION_COMPLETED',
         'application_id': application_id,
         'verification_status': item['verification_status'],
         'at': now(),
-        'provider': result.get('provider', 'GEMINI'),
+        'provider': provider,
     })
     save_records(records)
+    email_verification_update(item, tender, item['verification_status'])
 
 
 @app.get('/api/applications/{application_id}')
@@ -504,6 +565,12 @@ def submit_application(application_id: str, request: Request, background_tasks: 
     if required_terms and not required_terms.issubset(accepted): raise HTTPException(422,'All tender terms must be accepted')
     item['status']='SUBMITTED'; item['submitted_at']=now(); item['verification_status']='PENDING_VERIFICATION'; item['confirmation_number']='TH-' + secrets.token_hex(6).upper(); item['submission_idempotency_key']=idempotency_key or secrets.token_urlsafe(18); item['verification_jobs']=[{'status':'QUEUED','queued_at':now()}]; records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now(),'verification_status':'PENDING_VERIFICATION'}); save_records(records)
     background_tasks.add_task(run_application_verification, application_id)
+    background_tasks.add_task(
+        send_resend_email,
+        item.get('email', ''),
+        f"TenderHub bid received — {tender.get('name', 'Tender')}",
+        f"<p>Your bid has been received for <strong>{tender.get('name', 'the tender')}</strong>.</p><p>Confirmation: <strong>{item['confirmation_number']}</strong></p><p>Deadline: {tender.get('deadline', 'see tender details')}</p><p>Document verification is now queued. Final decisions require officer review.</p>",
+    )
     return {'application_id':application_id,'confirmation_number':item['confirmation_number'],'status':'SUBMITTED','verification_status':'PENDING_VERIFICATION','message':'Application submitted. Document verification has started in the background.'}
 
 def owned_tender(records, tender_id, user):
@@ -513,7 +580,13 @@ def owned_tender(records, tender_id, user):
     return tender
 
 def application_public(item):
-    return {k: v for k, v in item.items() if k not in ('bidder_id',)}
+    # Officer UI gets document metadata but never internal storage paths or hashes.
+    public = {k: v for k, v in item.items() if k not in ('bidder_id', 'submission_idempotency_key')}
+    public['documents'] = [
+        {k: v for k, v in doc.items() if k not in ('stored_name', 'sha256', 'extracted_text_preview')}
+        for doc in item.get('documents', [])
+    ]
+    return public
 
 @app.get('/api/officer/bids')
 def officer_bids(user=Depends(officer_user)):
@@ -521,7 +594,7 @@ def officer_bids(user=Depends(officer_user)):
     for item in records.get('applications', []):
         tender = next((t for t in records.get('tenders', []) if t.get('tender_id') == item.get('tender_id')), None)
         if tender and tender.get('email') == user.get('email'):
-            result.append({**application_public(item), 'tender_title': tender.get('name'), 'department': tender.get('department'), 'deadline': tender.get('deadline'), 'document_verification_status': 'PENDING' if item.get('documents') else 'DOCUMENTS_PENDING', 'ai_review_status': item.get('ai_review_status', 'NOT_STARTED')})
+            result.append({**application_public(item), 'tender_title': tender.get('name'), 'department': tender.get('department'), 'deadline': tender.get('deadline'), 'document_verification_status': item.get('verification_status', 'PENDING_VERIFICATION' if item.get('documents') else 'DOCUMENTS_PENDING'), 'ai_review_status': item.get('ai_review_status', 'NOT_STARTED')})
     return result
 
 @app.get('/api/bids/{application_id}')
