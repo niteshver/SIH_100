@@ -24,7 +24,7 @@ UPLOADS.mkdir(parents=True, exist_ok=True)
 DATA = UPLOADS / 'records.json'
 MAX_FILE = 10 * 1024 * 1024
 ALLOWED = {'pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg'}
-DOCUMENT_TYPES = {'TENDER_NOTICE', 'COMPANY_REGISTRATION', 'GST_CERTIFICATE', 'PAN_CARD', 'BANK_DETAILS', 'WORK_EXPERIENCE', 'FINANCIAL_STATEMENT', 'TECHNICAL_DOCUMENT', 'OTHER_SUPPORTING'}
+DOCUMENT_TYPES = {'TENDER_NOTICE', 'RFP_DOCUMENT', 'TECHNICAL_SPECIFICATIONS', 'SCOPE_OF_WORK', 'ELIGIBILITY_CRITERIA', 'BOQ_PRICE_SCHEDULE', 'TERMS_CONDITIONS', 'EVALUATION_CRITERIA', 'COMPANY_REGISTRATION', 'GST_CERTIFICATE', 'PAN_CARD', 'UDYAM_MSME', 'BANK_DETAILS', 'WORK_EXPERIENCE', 'COMPLETION_CERTIFICATE', 'FINANCIAL_STATEMENT', 'AUDITED_FINANCIALS', 'NON_BLACKLISTING', 'TECHNICAL_PROPOSAL', 'EMD_BID_SECURITY', 'ADDRESS_PROOF', 'OTHER_SUPPORTING'}
 MAX_ZIP = 25 * 1024 * 1024
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -178,6 +178,18 @@ async def create_tender(
     department: str = Form('Procurement'),
     deadline: str = Form(...),
     turnover: str = Form(''),
+    required_experience: str = Form(''),
+    minimum_turnover: str = Form(''),
+    bid_security_required: str = Form('false'),
+    bid_security_amount: str = Form(''),
+    category: str = Form('GENERAL'),
+    evaluation_method: str = Form('QUALITY_AND_COST'),
+    tender_status: str = Form('DRAFT'),
+    eligibility_requirements: str = Form('[]'),
+    bidder_documents: str = Form('[]'),
+    terms_conditions: str = Form('[]'),
+    technical_requirements: str = Form('[]'),
+    evaluation_criteria: str = Form('[]'),
     documents: List[UploadFile] = File(default=[]),
     user=Depends(officer_user),
 ):
@@ -188,9 +200,30 @@ async def create_tender(
     department = department.strip()
     deadline = deadline.strip()
     turnover = turnover.strip()
-
-    if len(name) < 4:
-        raise HTTPException(422, 'Tender title is required')
+    required_experience = required_experience.strip() or experience
+    minimum_turnover = minimum_turnover.strip() or turnover
+    category = category.strip() or 'GENERAL'
+    evaluation_method = evaluation_method.strip() or 'QUALITY_AND_COST'
+    try:
+        eligibility = json.loads(eligibility_requirements or '[]')
+        bidder_doc_definitions = json.loads(bidder_documents or '[]')
+        terms = json.loads(terms_conditions or '[]')
+        technical = json.loads(technical_requirements or '[]')
+        criteria = json.loads(evaluation_criteria or '[]')
+    except json.JSONDecodeError:
+        raise HTTPException(422, 'Structured tender fields must be valid JSON')
+    if not isinstance(eligibility, list) or any(not isinstance(item, dict) or not str(item.get('text', '')).strip() for item in eligibility):
+        raise HTTPException(422, 'Each eligibility requirement needs text')
+    if not isinstance(bidder_doc_definitions, list) or any(not isinstance(item, dict) or not item.get('document_type') for item in bidder_doc_definitions):
+        raise HTTPException(422, 'Each bidder document needs a document type')
+    try:
+        deadline_value = datetime.fromisoformat(deadline.replace('Z', '+00:00'))
+        if deadline_value.tzinfo is None: deadline_value = deadline_value.replace(tzinfo=timezone.utc)
+        if deadline_value <= datetime.now(timezone.utc): raise HTTPException(422, 'Deadline must be in the future')
+    except ValueError:
+        raise HTTPException(422, 'Deadline must be a valid date')
+    if len(name) < 4: raise HTTPException(422, 'Tender title is required')
+    if len(description) < 10: raise HTTPException(422, 'Tender description is required')
 
     saved = []
 
@@ -203,6 +236,20 @@ async def create_tender(
         'name': name,
         'email': user['email'],
         'experience': experience,
+        'turnover': turnover,
+        'required_experience': required_experience,
+        'minimum_turnover': minimum_turnover,
+        'bid_security_required': bid_security_required.lower() in {'true', 'yes', '1', 'on'},
+        'bid_security_amount': bid_security_amount.strip(),
+        'category': category,
+        'evaluation_method': evaluation_method,
+        'technical_requirements': technical,
+        'evaluation_criteria': criteria,
+        'eligibility_requirements': eligibility,
+        'bidder_documents': bidder_doc_definitions,
+        'optional_documents': [d for d in bidder_doc_definitions if not d.get('required', True)],
+        'terms_conditions': terms,
+        'tender_status': tender_status if tender_status in {'DRAFT', 'OPEN'} else 'DRAFT',
         'turnover': turnover,
         'budget': budget,
         'description': description,
@@ -279,6 +326,11 @@ def application_for(records, application_id, user, allow_officer=False):
         raise HTTPException(403, 'Application access denied')
     return app_record
 
+def tender_for_application(records, tender_id):
+    tender = next((t for t in records.get('tenders', []) if t.get('tender_id') == tender_id), None)
+    if not tender: raise HTTPException(404, 'Tender not found')
+    return tender
+
 @app.get('/api/applications')
 def list_applications(user=Depends(bidder_user)):
     return [a for a in load_records().get('applications', []) if a.get('bidder_id') == user['user_id']]
@@ -326,8 +378,13 @@ def submit_application(application_id: str, user=Depends(bidder_user)):
     company=item.get('company',{}); required=['name','authorized_person','email','mobile','city','experience_years','annual_turnover','pan','gstin']
     if any(not str(company.get(k,'')).strip() for k in required) or not item.get('bid_amount'): raise HTTPException(422,'Required company and bid fields are incomplete')
     if not all(item.get('eligibility',{}).get(k) for k in ('experience_confirmation','turnover_confirmation','compliance_declaration')): raise HTTPException(422,'Eligibility confirmations are incomplete')
-    required_docs={'PAN_CARD','GST_CERTIFICATE','COMPANY_REGISTRATION','ADDRESS_PROOF','WORK_EXPERIENCE','FINANCIAL_STATEMENT'}
-    if not required_docs.issubset({d.get('document_type') for d in item.get('documents',[]) if d.get('upload_status')=='UPLOADED'}): raise HTTPException(422,'Required documents are incomplete')
+    tender = tender_for_application(records, item.get('tender_id'))
+    required_docs={d.get('document_type') for d in tender.get('bidder_documents', []) if d.get('required', True)}
+    uploaded={d.get('document_type') for d in item.get('documents',[]) if d.get('upload_status')=='UPLOADED'}
+    if required_docs and not required_docs.issubset(uploaded): raise HTTPException(422,'Required documents are incomplete')
+    required_terms={str(term.get('id') or term.get('text')) for term in tender.get('terms_conditions', [])}
+    accepted={str(term) for term in item.get('accepted_terms', [])}
+    if required_terms and not required_terms.issubset(accepted): raise HTTPException(422,'All tender terms must be accepted')
     item['status']='SUBMITTED'; item['submitted_at']=now(); records['audit'].append({'event':'APPLICATION_SUBMITTED','application_id':application_id,'user_id':user['user_id'],'at':now()}); save_records(records); return {'application_id':application_id,'status':'SUBMITTED'}
 
 def owned_tender(records, tender_id, user):
