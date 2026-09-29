@@ -42,12 +42,27 @@ Attach a Railway Volume to the backend service at mount path `/data`. Set `UPLOA
 
 ### Frontend service variables
 
-- `VITE_API_URL=https://sih100-production.up.railway.app` (use the active public domain shown in the backend service's Networking settings).
+- `VITE_API_URL=https://api.chatlyme.xyz` after attaching that custom domain to the backend Railway service below.
 - Because `VITE_API_URL` is a build-time variable, redeploy/rebuild the frontend after changing it.
+
+### Required: same-site API domain for reliable login sessions
+
+The frontend and API must use the same site for browser cookie sessions to work reliably when third-party cookies are blocked (especially in Incognito/private browsing). Do not leave the production API on the default `*.up.railway.app` domain while the UI runs on `chatlyme.xyz`.
+
+1. In the **backend Railway service**, add the custom domain `api.chatlyme.xyz` and configure the DNS record using the exact target Railway displays.
+2. Set backend variables:
+   - `COOKIE_SECURE=true`
+   - `COOKIE_SAMESITE=lax`
+   - `FRONTEND_ORIGINS=https://chatlyme.xyz,https://www.chatlyme.xyz`
+   - Keep `SESSION_SECRET` persistent across deploys.
+3. In the **frontend Railway service**, set `VITE_API_URL=https://api.chatlyme.xyz`, then trigger a new frontend build/deploy. This variable is embedded at build time.
+4. Verify in DevTools that the `register` or `login` response sets the `tenderhub_session` cookie for `api.chatlyme.xyz`, and that subsequent `/api/auth/me` and `/api/tenders` requests include that cookie and return 200.
+
+The cookie is intentionally HttpOnly. Do not work around session failures by storing the session token in localStorage. The frontend also now builds bidder tender/application links under `/bidder/...` rather than incorrectly generating `/officer/...` links.
 
 ### Verify the deployment
 
-1. Open `https://sih100-production.up.railway.app/health`. Check `status: ok`, AI configuration flags, and `storage: volume_path_configured`.
+1. Open `https://api.chatlyme.xyz/health`. Check `status: ok`, AI configuration flags, and `storage: volume_path_configured`.
 2. Register a bidder account and sign in. Register an officer account separately.
 3. Publish a tender with at least one required document type and a future deadline.
 4. Sign in as the bidder, open the tender, upload every required document, accept the terms, save the draft, and submit the bid.
