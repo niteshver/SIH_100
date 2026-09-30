@@ -153,16 +153,13 @@ def verify_password(password: str, stored: str):
         return False
 
 @app.post('/api/auth/register')
-def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('BIDDER'), organization: str=Form(''), invite_code: str=Form('')):
+def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('BIDDER'), organization: str=Form('')):
     full_name = full_name.strip(); email = email.strip().lower(); role = role.strip().upper(); organization = organization.strip()
     if len(full_name) < 2 or len(full_name) > 120: raise HTTPException(422, 'Enter a valid full name')
     if not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', email) or len(email) > 254: raise HTTPException(422, 'Enter a valid email address')
     if len(password) < 8 or len(password) > 128: raise HTTPException(422, 'Password must be 8 to 128 characters')
-    if role not in {'OFFICER','BIDDER'}: raise HTTPException(422, 'Choose a valid account role')
+    if role != 'BIDDER': raise HTTPException(422, 'Only bidder accounts can be created')
     if not organization or len(organization) > 160: raise HTTPException(422, 'Organization is required')
-    configured_invite = os.getenv('OFFICER_INVITE_CODE', '').strip()
-    if role == 'OFFICER' and (not configured_invite or not secrets.compare_digest(invite_code, configured_invite)):
-        raise HTTPException(403, 'Officer accounts require a valid invitation code')
     records = load_records(); records.setdefault('users', [])
     if any(u.get('email') == email for u in records['users']): raise HTTPException(409, 'An account with this email already exists')
     user = {'user_id': 'USR-' + secrets.token_hex(8), 'name': full_name, 'email': email, 'role': role, 'organization': organization, 'password_hash': hash_password(password), 'created_at': now()}
@@ -174,8 +171,8 @@ def register(response: Response, full_name: str=Form(...), email: str=Form(...),
 def login(response: Response, email: str=Form(...), password: str=Form(...), role: str=Form('')):
     email = email.strip().lower(); role = role.strip().upper()
     records = load_records(); user = next((u for u in records.get('users', []) if u.get('email') == email), None)
-    if role and role not in {'OFFICER', 'BIDDER'}: raise HTTPException(422, 'Choose a valid account role')
-    if not user or not verify_password(password, user.get('password_hash', '')) or (role and user.get('role') != role): raise HTTPException(401, 'Invalid email, password, or account role')
+    if role and role != 'BIDDER': raise HTTPException(422, 'Only bidder accounts can sign in')
+    if not user or user.get('role') != 'BIDDER' or not verify_password(password, user.get('password_hash', '')): raise HTTPException(401, 'Invalid email or password')
     records['audit'].append({'event':'LOGIN','user_id':user['user_id'],'role':user['role'],'at':now()}); save_records(records)
     set_session_cookie(response, user['user_id'])
     return public_user(user)
