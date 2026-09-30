@@ -189,7 +189,19 @@ def logout(response: Response):
     return {'status':'logged_out'}
 
 @app.get('/health')
-def health(): return {'status':'ok','mode':'connected','storage':'configured persistence','timestamp':now()}
+def health():
+    upload_path = str(UPLOADS.resolve())
+    volume_configured = upload_path == '/data' or upload_path.startswith('/data/')
+    return {
+        'status': 'ok',
+        'mode': 'connected',
+        'storage': 'volume_path_configured' if volume_configured else 'ephemeral_storage',
+        'ai': {
+            'gemini_configured': bool(os.getenv('GEMINI_API_KEY', '').strip()),
+            'ollama_configured': bool(os.getenv('OLLAMA_BASE_URL', '').strip()),
+        },
+        'timestamp': now(),
+    }
 @app.get('/api/tenders')
 def tenders(user=Depends(current_user)):
     return load_records()['tenders'] if user['role'] == 'OFFICER' else [t for t in load_records()['tenders'] if t.get('status') == 'OPEN']
