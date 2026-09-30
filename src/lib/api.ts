@@ -13,7 +13,7 @@ export async function apiRequest<T = unknown>(
     ...options,
     credentials: "include",
     headers: {
-      ...(isFormData ? {} : { "Content-Type": "application/json" }),
+      ...(options.body != null && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
   });
