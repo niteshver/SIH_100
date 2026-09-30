@@ -24,51 +24,52 @@ SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 
 ## Railway deployment checklist
 
-Deploy the frontend and FastAPI backend as separate services.
+**Deploy the frontend and backend as two separate Railway services.** The root `Dockerfile` is the Vite frontend. The dedicated FastAPI Dockerfile is `backend/Dockerfile`.
 
-### Backend service variables
+### 1. Configure the FastAPI backend service
 
-- `SESSION_SECRET`: a long, persistent random secret. Do not change it between deploys unless you intend to invalidate all sessions.
-- `FRONTEND_ORIGINS=https://chatlyme.xyz,https://www.chatlyme.xyz`
+In Railway, create or select the backend service for this repository and set:
+
+- **Root Directory:** `/backend`
+- **Builder:** Dockerfile (Railway reads `backend/Dockerfile` relative to the configured root directory).
+- **Healthcheck path:** `/health` (also configured in `backend/railway.json`).
+- **Volume:** attach a Railway Volume mounted at `/data`.
+
+Set these backend service variables in Railway:
+
+- `SESSION_SECRET`: a long, persistent random secret. The backend intentionally fails to start if this is missing. Generate one locally with `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. Do not commit or share it, and do not change it between deploys unless you intend to invalidate all sessions.
 - `UPLOAD_DIR=/data/uploads`
-- `GEMINI_API_KEY`: set the key on the backend only. Never use a `VITE_*` name for secrets.
+- `FRONTEND_ORIGINS=https://chatlyme.xyz,https://www.chatlyme.xyz`
+- `COOKIE_SECURE=true`
+- `COOKIE_SAMESITE=lax`
+- `GEMINI_API_KEY`: set this on the backend only if you want Gemini document analysis.
 - `GEMINI_MODEL=gemini-2.5-flash`
 - Optional Resend: `RESEND_API_KEY` and `RESEND_FROM_EMAIL` (must be a sender/domain verified with Resend).
-- Optional Ollama fallback: `OLLAMA_BASE_URL` must be an HTTPS endpoint reachable by Railway and `OLLAMA_MODEL=llama3-groq-tool-use:8b`. Ollama running on your Mac at `localhost` is not reachable from Railway without a secure remote endpoint/tunnel. The API tries Gemini first and uses Ollama only when configured and reachable.
+- Optional Ollama fallback: `OLLAMA_BASE_URL` must be an HTTPS endpoint reachable by Railway and `OLLAMA_MODEL=llama3-groq-tool-use:8b`. Ollama running on your Mac at `localhost` is not reachable from Railway without a secure remote endpoint/tunnel.
 
-### Persistent uploads and records
+The backend container installs `backend/requirements.txt`, copies the `backend/app` package, binds to `0.0.0.0:$PORT`, and starts `uvicorn app.main:app`. Do not run the root Vite `npm start` command as the backend start command.
 
-Attach a Railway Volume to the backend service at mount path `/data`. Set `UPLOAD_DIR=/data/uploads`. The application stores uploaded files and its JSON record file under this directory. Without the mounted volume, local container files may be lost during redeploy/restart. For a larger or multi-replica production deployment, migrate JSON records to PostgreSQL and files to object storage.
+### 2. Configure the frontend service
 
-### Frontend service variables
+Keep the frontend service's root directory at the repository root so it uses the root `Dockerfile`. Set:
 
-- `VITE_API_URL=https://api.chatlyme.xyz` after attaching that custom domain to the backend Railway service below.
-- Because `VITE_API_URL` is a build-time variable, redeploy/rebuild the frontend after changing it.
+- `VITE_API_URL=https://api.chatlyme.xyz`
 
-### Required: same-site API domain for reliable login sessions
+Attach the custom domain `api.chatlyme.xyz` to the **backend service**, using the exact DNS target Railway displays. In the frontend service, trigger a fresh build/deploy after changing `VITE_API_URL`; Vite embeds this variable during the build.
 
 The frontend and API must use the same site for browser cookie sessions to work reliably when third-party cookies are blocked (especially in Incognito/private browsing). Do not leave the production API on the default `*.up.railway.app` domain while the UI runs on `chatlyme.xyz`.
 
-1. In the **backend Railway service**, add the custom domain `api.chatlyme.xyz` and configure the DNS record using the exact target Railway displays.
-2. Set backend variables:
-   - `COOKIE_SECURE=true`
-   - `COOKIE_SAMESITE=lax`
-   - `FRONTEND_ORIGINS=https://chatlyme.xyz,https://www.chatlyme.xyz`
-   - Keep `SESSION_SECRET` persistent across deploys.
-3. In the **frontend Railway service**, set `VITE_API_URL=https://api.chatlyme.xyz`, then trigger a new frontend build/deploy. This variable is embedded at build time.
-4. Verify in DevTools that the `register` or `login` response sets the `tenderhub_session` cookie for `api.chatlyme.xyz`, and that subsequent `/api/auth/me` and `/api/tenders` requests include that cookie and return 200.
+### 3. Verify the deployment in order
 
-The cookie is intentionally HttpOnly. Do not work around session failures by storing the session token in localStorage. The frontend also now builds bidder tender/application links under `/bidder/...` rather than incorrectly generating `/officer/...` links.
+1. Open `https://api.chatlyme.xyz/health`. It should return JSON with `"status":"ok"`. The response also reports whether the upload path is configured under `/data` and whether Gemini/Ollama variables are configured; this does not prove that a Railway Volume is attached, so verify the Volume in Railway as well.
+2. If health returns 502/503, open the **backend service's latest deployment logs**. Check for `SESSION_SECRET must be configured`, dependency installation failures, or an import/startup traceback. Do not debug the React login form until the backend starts successfully.
+3. Register a bidder and sign in. Verify the `register` or `login` response sets the HttpOnly `tenderhub_session` cookie for `api.chatlyme.xyz`.
+4. Verify `/api/auth/me`, `/api/tenders`, and `/api/bids` return 200 with the session cookie.
+5. Publish a tender with a future deadline and required document types. Sign in as the bidder, open the tender, upload the required documents, save the draft, and submit the bid. Check My Applications and the officer's Bid Review for document names and verification status.
 
-### Verify the deployment
+### 4. Persistence and production scope
 
-1. Open `https://api.chatlyme.xyz/health`. Check `status: ok`, AI configuration flags, and `storage: volume_path_configured`.
-2. Register a bidder account and sign in. Register an officer account separately.
-3. Publish a tender with at least one required document type and a future deadline.
-4. Sign in as the bidder, open the tender, upload every required document, accept the terms, save the draft, and submit the bid.
-5. Check that the application appears under My Applications and the officer's Bid Review, with document names and verification status.
-6. If Gemini is unavailable and a remote Ollama endpoint is configured, verification should fall back; if both fail or a file has no extractable text, the result must remain flagged for manual review.
-7. Email notifications are optional. Configure Resend's API key and verified sender to send submission and verification updates.
+The app stores uploaded files and JSON records under `UPLOAD_DIR`. Without a mounted volume, files and records can be lost on restart/redeploy. A local JSON file is suitable only for a single-replica MVP; for multi-replica or higher-volume production use PostgreSQL for records and object storage for documents.
 
 ## Safety notes
 

@@ -156,7 +156,7 @@ def verify_password(password: str, stored: str):
 def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('BIDDER'), organization: str=Form(''), invite_code: str=Form('')):
     full_name = full_name.strip(); email = email.strip().lower(); role = role.strip().upper(); organization = organization.strip()
     if len(full_name) < 2 or len(full_name) > 120: raise HTTPException(422, 'Enter a valid full name')
-    if not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', email) or len(email) > 254: raise HTTPException(422, 'Enter a valid email address')
+    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email) or len(email) > 254: raise HTTPException(422, 'Enter a valid email address')
     if len(password) < 8 or len(password) > 128: raise HTTPException(422, 'Password must be 8 to 128 characters')
     if role not in {'OFFICER','BIDDER'}: raise HTTPException(422, 'Choose a valid account role')
     if not organization or len(organization) > 160: raise HTTPException(422, 'Organization is required')
@@ -189,7 +189,19 @@ def logout(response: Response):
     return {'status':'logged_out'}
 
 @app.get('/health')
-def health(): return {'status':'ok','mode':'connected','storage':'configured persistence','timestamp':now()}
+def health():
+    upload_path = str(UPLOADS.resolve())
+    volume_configured = upload_path == '/data' or upload_path.startswith('/data/')
+    return {
+        'status': 'ok',
+        'mode': 'connected',
+        'storage': 'volume_path_configured' if volume_configured else 'ephemeral_storage',
+        'ai': {
+            'gemini_configured': bool(os.getenv('GEMINI_API_KEY', '').strip()),
+            'ollama_configured': bool(os.getenv('OLLAMA_BASE_URL', '').strip()),
+        },
+        'timestamp': now(),
+    }
 @app.get('/api/tenders')
 def tenders(user=Depends(current_user)):
     return load_records()['tenders'] if user['role'] == 'OFFICER' else [t for t in load_records()['tenders'] if t.get('status') == 'OPEN']
