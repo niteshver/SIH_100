@@ -117,6 +117,19 @@ def current_user(request: Request):
 def public_user(user): return {k: user.get(k, '') for k in ('user_id','name','email','role','organization')}
 
 
+def set_session_cookie(response: Response, user_id: str):
+    secure = os.getenv('COOKIE_SECURE', 'true').strip().lower() == 'true'
+    same_site = os.getenv('COOKIE_SAMESITE', 'none').strip().lower()
+    if same_site not in {'lax', 'strict', 'none'}:
+        same_site = 'none'
+    if same_site == 'none' and not secure:
+        raise RuntimeError('COOKIE_SECURE must be true when COOKIE_SAMESITE is none')
+    response.set_cookie(
+        'tenderhub_session', make_session(user_id), httponly=True, secure=secure,
+        samesite=same_site, max_age=86400, path='/',
+    )
+
+
 def officer_user(user=Depends(current_user)):
     if user['role'] != 'OFFICER': raise HTTPException(403, 'Officer access required')
     return user
@@ -140,21 +153,31 @@ def verify_password(password: str, stored: str):
         return False
 
 @app.post('/api/auth/register')
-def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('OFFICER'), organization: str=Form('')):
-    if len(password) < 8: raise HTTPException(422, 'Password must be at least 8 characters')
-    email = email.strip().lower(); records = load_records(); records.setdefault('users', [])
-    if any(u['email'] == email for u in records['users']): raise HTTPException(409, 'An account with this email already exists')
-    user = {'user_id': 'USR-' + secrets.token_hex(8), 'name': full_name.strip(), 'email': email, 'role': role if role in {'OFFICER','BIDDER'} else 'BIDDER', 'organization': organization.strip(), 'password_hash': hash_password(password), 'created_at': now()}
-    records['users'].append(user); records['audit'].append({'event':'REGISTRATION','user_id':user['user_id'],'at':now()}); save_records(records)
-    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite=os.getenv('COOKIE_SAMESITE', 'none'), max_age=86400)
+def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('BIDDER'), organization: str=Form(''), invite_code: str=Form('')):
+    full_name = full_name.strip(); email = email.strip().lower(); role = role.strip().upper(); organization = organization.strip()
+    if len(full_name) < 2 or len(full_name) > 120: raise HTTPException(422, 'Enter a valid full name')
+    if not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', email) or len(email) > 254: raise HTTPException(422, 'Enter a valid email address')
+    if len(password) < 8 or len(password) > 128: raise HTTPException(422, 'Password must be 8 to 128 characters')
+    if role not in {'OFFICER','BIDDER'}: raise HTTPException(422, 'Choose a valid account role')
+    if not organization or len(organization) > 160: raise HTTPException(422, 'Organization is required')
+    configured_invite = os.getenv('OFFICER_INVITE_CODE', '').strip()
+    if role == 'OFFICER' and (not configured_invite or not secrets.compare_digest(invite_code, configured_invite)):
+        raise HTTPException(403, 'Officer accounts require a valid invitation code')
+    records = load_records(); records.setdefault('users', [])
+    if any(u.get('email') == email for u in records['users']): raise HTTPException(409, 'An account with this email already exists')
+    user = {'user_id': 'USR-' + secrets.token_hex(8), 'name': full_name, 'email': email, 'role': role, 'organization': organization, 'password_hash': hash_password(password), 'created_at': now()}
+    records['users'].append(user); records['audit'].append({'event':'REGISTRATION','user_id':user['user_id'],'role':role,'at':now()}); save_records(records)
+    set_session_cookie(response, user['user_id'])
     return public_user(user)
 
 @app.post('/api/auth/login')
-def login(response: Response, email: str=Form(...), password: str=Form(...)):
-    records = load_records(); user = next((u for u in records.get('users', []) if u['email'] == email.strip().lower()), None)
-    if not user or not verify_password(password, user['password_hash']): raise HTTPException(401, 'Invalid email or password')
-    records['audit'].append({'event':'LOGIN','user_id':user['user_id'],'at':now()}); save_records(records)
-    response.set_cookie('tenderhub_session', make_session(user['user_id']), httponly=True, secure=os.getenv('COOKIE_SECURE','true').lower() == 'true', samesite=os.getenv('COOKIE_SAMESITE', 'none'), max_age=86400)
+def login(response: Response, email: str=Form(...), password: str=Form(...), role: str=Form('')):
+    email = email.strip().lower(); role = role.strip().upper()
+    records = load_records(); user = next((u for u in records.get('users', []) if u.get('email') == email), None)
+    if role and role not in {'OFFICER', 'BIDDER'}: raise HTTPException(422, 'Choose a valid account role')
+    if not user or not verify_password(password, user.get('password_hash', '')) or (role and user.get('role') != role): raise HTTPException(401, 'Invalid email, password, or account role')
+    records['audit'].append({'event':'LOGIN','user_id':user['user_id'],'role':user['role'],'at':now()}); save_records(records)
+    set_session_cookie(response, user['user_id'])
     return public_user(user)
 
 @app.get('/api/auth/me')

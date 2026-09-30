@@ -1,7 +1,7 @@
-const API_URL = (
-  import.meta.env.VITE_API_URL ||
-  "https://sih100-production.up.railway.app"
-).replace(/\/+$/, "").replace(/\/api$/, "");
+const configuredApi = String(import.meta.env.VITE_API_URL || '').trim();
+const API_URL = (configuredApi && !configuredApi.includes('sih100-production.up.railway.app')
+  ? configuredApi
+  : 'https://api.chatlyme.xyz').replace(/\/+$/, '').replace(/\/api$/, '');
 
 export async function apiRequest<T = unknown>(
   path: string,
