@@ -24,11 +24,16 @@ SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 
 ## Railway deployment checklist
 
-Deploy the frontend and FastAPI backend as separate services.
+Deploy the frontend and FastAPI backend as separate Railway services. The repository-root `Dockerfile` is for the frontend only.
+
+**Backend service configuration (important for 502/503 errors):** set the backend service Root Directory to `/backend`. This makes Railway use `backend/Dockerfile` and `backend/railway.json` from this repository. The backend Dockerfile installs `app/requirements.txt` and starts `uvicorn app.main:app` on Railway's assigned `PORT`. Do not point the backend service at the repository-root frontend Dockerfile or the empty legacy file named `backend/Dockerfile 2`.
+
+The API deliberately exits during startup if `SESSION_SECRET` is missing. If `/health` returns 502/503, inspect the backend service's **Deploy Logs** first: set `SESSION_SECRET` in the backend Variables if the log says it is missing, then redeploy. Generate a long random secret and keep it unchanged between deployments.
 
 ### Backend service variables
 
-- `SESSION_SECRET`: a long, persistent random secret. Do not change it between deploys unless you intend to invalidate all sessions.
+- `SESSION_SECRET`: required; a long, persistent random secret. Do not change it between deploys unless you intend to invalidate all sessions.
+- `OFFICER_INVITE_CODE`: required only if officers are created through registration; keep it backend-only and share it only with authorized officers.
 - `FRONTEND_ORIGINS=https://chatlyme.xyz,https://www.chatlyme.xyz`
 - `UPLOAD_DIR=/data/uploads`
 - `GEMINI_API_KEY`: set the key on the backend only. Never use a `VITE_*` name for secrets.
@@ -62,7 +67,7 @@ The cookie is intentionally HttpOnly. Do not work around session failures by sto
 
 ### Verify the deployment
 
-1. Open `https://api.chatlyme.xyz/health`. Check `status: ok`, AI configuration flags, and `storage: volume_path_configured`.
+1. Open `https://api.chatlyme.xyz/health` and confirm the JSON response contains `status: ok`. Separately confirm the Railway Volume is mounted at `/data`; the health endpoint does not prove that the volume is attached.
 2. Register a bidder account and sign in. Register an officer account separately.
 3. Publish a tender with at least one required document type and a future deadline.
 4. Sign in as the bidder, open the tender, upload every required document, accept the terms, save the draft, and submit the bid.
