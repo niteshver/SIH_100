@@ -156,7 +156,7 @@ def verify_password(password: str, stored: str):
 def register(response: Response, full_name: str=Form(...), email: str=Form(...), password: str=Form(...), role: str=Form('BIDDER'), organization: str=Form(''), invite_code: str=Form('')):
     full_name = full_name.strip(); email = email.strip().lower(); role = role.strip().upper(); organization = organization.strip()
     if len(full_name) < 2 or len(full_name) > 120: raise HTTPException(422, 'Enter a valid full name')
-    if not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', email) or len(email) > 254: raise HTTPException(422, 'Enter a valid email address')
+    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email) or len(email) > 254: raise HTTPException(422, 'Enter a valid email address')
     if len(password) < 8 or len(password) > 128: raise HTTPException(422, 'Password must be 8 to 128 characters')
     if role not in {'OFFICER','BIDDER'}: raise HTTPException(422, 'Choose a valid account role')
     if not organization or len(organization) > 160: raise HTTPException(422, 'Organization is required')
